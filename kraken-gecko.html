@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>1h Gainers/Losers</title>
+<style>
+    body {
+        width: 480px;
+        height: 480px;
+        margin: 0;
+        background: black;
+        color: white;
+        font-family: Arial, sans-serif;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 10px;
+    }
+    h2 {
+        text-align: center;
+        margin: 5px 0;
+        font-size: 26px;
+    }
+    .item {
+        display: flex;
+        justify-content: space-between;
+        font-size: 22px;
+        margin: 6px 0;
+    }
+    .green { color: #4caf50; }
+    .red { color: #ff5252; }
+</style>
+</head>
+<body>
+
+<h2>1h Gainers</h2>
+<div id="gainers"></div>
+
+<h2>1h Losers</h2>
+<div id="losers"></div>
+
+<script>
+async function loadData() {
+    try {
+        const res = await fetch("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false&price_change_percentage=1h");
+        const data = await res.json();
+
+        const gainers = data.sort((a,b) => b.price_change_percentage_1h_in_currency - a.price_change_percentage_1h_in_currency).slice(0, 3);
+        const losers = data.sort((a,b) => a.price_change_percentage_1h_in_currency - b.price_change_percentage_1h_in_currency).slice(0, 3);
+
+        document.getElementById("gainers").innerHTML =
+            gainers.map(c => `<div class="item"><span>${c.symbol.toUpperCase()}</span><span class="green">+${c.price_change_percentage_1h_in_currency.toFixed(2)}%</span></div>`).join("");
+
+        document.getElementById("losers").innerHTML =
+            losers.map(c => `<div class="item"><span>${c.symbol.toUpperCase()}</span><span class="red">${c.price_change_percentage_1h_in_currency.toFixed(2)}%</span></div>`).join("");
+    } catch (e) {
+        document.body.innerHTML = "<h2>Error loading data</h2>";
+    }
+}
+
+loadData();
+setInterval(loadData, 60000); // refresh every 60s
+</script>
+
+</body>
+</html>
