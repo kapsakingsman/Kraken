@@ -38,19 +38,28 @@
 <div id="losers"></div>
 
 <script>
+const VS_CURRENCY = "usd";
+const MAX_PAGES = 4;       // 4 * 250 = top 1000 coins by mcap
+const MIN_VOL_USD = 50000; // match CG: only coins with >= $50k 24h volume
+
 async function fetchAllPages() {
-    let page = 1;
-    let allData = [];
-    while (true) {
-        const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${page}&sparkline=false&price_change_percentage=1h`;
+    const allData = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+        const url =
+          `https://api.coingecko.com/api/v3/coins/markets` +
+          `?vs_currency=${VS_CURRENCY}` +
+          `&order=market_cap_desc` +
+          `&per_page=250&page=${page}` +
+          `&sparkline=false` +
+          `&price_change_percentage=1h`;
+
         const res = await fetch(url);
+        if (!res.ok) break;
+
         const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) break;
 
-        if (data.length === 0) break;
-
-        allData = allData.concat(data);
-        page++;
-        if (page > 8) break; // max = 8 pages (2000 coins)
+        allData.push(...data);
     }
     return allData;
 }
@@ -59,34 +68,38 @@ async function loadData() {
     try {
         const data = await fetchAllPages();
 
-        // Filter coins with valid 1h data
+        // Filter like CoinGecko's endpoint: valid 1h change + decent volume
         const filtered = data.filter(c =>
             c.price_change_percentage_1h_in_currency !== null &&
-            c.price_change_percentage_1h_in_currency !== undefined
+            c.price_change_percentage_1h_in_currency !== undefined &&
+            c.total_volume !== null &&
+            c.total_volume >= MIN_VOL_USD
         );
 
-        // Top 5 gainers
-        const gainers = filtered
+        // Top 5 gainers (highest 1h %)
+        const gainers = [...filtered]
             .sort((a, b) =>
                 b.price_change_percentage_1h_in_currency -
                 a.price_change_percentage_1h_in_currency
             )
             .slice(0, 5);
 
-        // Top 5 losers
-        const losers = filtered
+        // Top 5 losers (lowest 1h %)
+        const losers = [...filtered]
             .sort((a, b) =>
                 a.price_change_percentage_1h_in_currency -
                 b.price_change_percentage_1h_in_currency
             )
             .slice(0, 5);
 
-        // Display
         document.getElementById("gainers").innerHTML =
             gainers.map(c => `
                 <div class="item">
                     <span>${c.symbol.toUpperCase()}</span>
-                    <span class="green">+${c.price_change_percentage_1h_in_currency.toFixed(2)}%</span>
+                    <span class="green">
+                        ${c.price_change_percentage_1h_in_currency >= 0 ? "+" : ""}
+                        ${c.price_change_percentage_1h_in_currency.toFixed(2)}%
+                    </span>
                 </div>
             `).join("");
 
@@ -94,17 +107,21 @@ async function loadData() {
             losers.map(c => `
                 <div class="item">
                     <span>${c.symbol.toUpperCase()}</span>
-                    <span class="red">${c.price_change_percentage_1h_in_currency.toFixed(2)}%</span>
+                    <span class="red">
+                        ${c.price_change_percentage_1h_in_currency.toFixed(2)}%
+                    </span>
                 </div>
             `).join("");
 
     } catch (error) {
+        console.error(error);
         document.body.innerHTML = "<h2>Error loading data</h2>";
     }
 }
 
 loadData();
-setInterval(loadData, 60000); // refresh every minute
+// Be careful with rate limits – 60s is usually safe
+setInterval(loadData, 60000);
 </script>
 
 </body>
