@@ -46,10 +46,10 @@ body {
   position: absolute;
   width: 100%;
   height: 100%;
-  padding: 40px 30px 20px;   /* more top padding */
+  padding: 20px 24px;
   display: flex;
   flex-direction: column;
-  justify-content: flex-start; /* push content towards top */
+  justify-content: center;  /* CENTER VERTICALLY */
   align-items: center;
   opacity: 0;
   transition: opacity 0.35s ease;
@@ -62,21 +62,20 @@ body {
   text-align: center;
   font-size: 42px;
   font-weight: 500;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 /* List */
 .list {
-  width: 80%;                 /* keeps both columns inside circle */
+  width: 78%;            /* CONTROL horizontal layout */
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 11px;
 }
 
 /* Row */
 .row {
   display: flex;
-  justify-content: flex-start; /* no big spread */
   align-items: baseline;
   font-size: 42px;
   font-weight: 500;
@@ -84,8 +83,7 @@ body {
 
 /* Token name */
 .symbol {
-  flex: 0 0 auto;
-  max-width: 60%;             /* name column */
+  flex: 0 0 52%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -93,9 +91,8 @@ body {
 
 /* Percentage */
 .change {
-  flex: 0 0 auto;
-  margin-left: 32px;          /* THIS controls horizontal gap */
-  min-width: 90px;            /* keeps numbers aligned but closer */
+  flex: 0 0 40%;
+  margin-left: 18px;     /* SLIGHT SPACE BETWEEN NAME AND % */
   text-align: right;
 }
 
@@ -105,7 +102,7 @@ body {
 
 /* Footer */
 .updated {
-  margin-top: 16px;
+  margin-top: 18px;
   font-size: 14px;
   text-align: center;
   color: var(--muted);
@@ -142,7 +139,6 @@ const REFRESH_MS = 5 * 60 * 1000;
 function createRows(containerId, colorClass) {
   const container = document.getElementById(containerId);
   const rows = [];
-
   for (let i = 0; i < 5; i++) {
     const row = document.createElement("div");
     row.className = "row";
