@@ -134,12 +134,11 @@ body {
 <script>
 /* ===================== CONFIG ===================== */
 
+// Force full page reload every minute
+setTimeout(() => location.reload(), 60 * 1000);
+  
 // Page flip between gainers / losers
 const PAGE_SWITCH_MS = 6000;
-
-// How often to refresh data from CoinGecko
-// (multi-page fetch is heavy, so 10 min is safer)
-const REFRESH_MS = 10 * 60 * 1000;
 
 // CoinGecko paging config
 const PER_PAGE = 250;      // max allowed
