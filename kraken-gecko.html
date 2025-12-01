@@ -2,314 +2,225 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Kraken 1h Gainers & Losers</title>
+<title>Kraken 1H Gainers & Losers</title>
 <style>
-    :root {
-        --bg: #000000;
-        --text-main: #f5f5f5;
-        --text-muted: #a0a0a0;
-        --green: #00ff7f;
-        --red: #ff5252;
-        --accent: #ffffff;
-    }
+:root {
+  --bg: #000;
+  --fg: #fff;
+  --muted: #9b9b9b;
+  --green: #00ff7f;
+  --red: #ff5252;
+}
 
-    * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-    }
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
-    body {
-        width: 640px;
-        height: 640px;
-        background: var(--bg);
-        color: var(--text-main);
-        font-family: Arial, sans-serif;
-        overflow: hidden;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
+body {
+  width: 640px;
+  height: 640px;
+  background: black;
+  font-family: Arial, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg);
+}
 
-    /* Safe area inside the circle (so edges don’t get cut) */
-    .safe {
-        width: 520px;
-        height: 520px;
-        border-radius: 50%;
-        padding: 28px;
-        position: relative;
-        overflow: hidden;
-    }
+/* Circle safe-area */
+.safe {
+  width: 540px;
+  height: 540px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
 
-    .page {
-        position: absolute;
-        inset: 28px; /* same as padding above */
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        opacity: 0;
-        transition: opacity 0.45s ease-in-out;
-        pointer-events: none;
-    }
+/* Page system */
+.page {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.4s ease-in-out;
+}
 
-    .page.active {
-        opacity: 1;
-        pointer-events: auto;
-    }
+.page.active {
+  opacity: 1;
+}
 
-    .header {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        margin-bottom: 10px;
-    }
+/* Title */
+.title {
+  text-align: center;
+  font-size: 42px;
+  font-weight: 700;
+  margin-bottom: 26px;
+  letter-spacing: 1.2px;
+}
 
-    .title {
-        font-size: 30px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-    }
+/* List */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
 
-    .subtitle {
-        font-size: 14px;
-        color: var(--text-muted);
-    }
+/* Row style */
+.row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 30px;
+  font-weight: 600;
+}
 
-    .list {
-        margin-top: 10px;
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-start;
-        gap: 8px;
-    }
+.symbol {
+  letter-spacing: 1px;
+}
 
-    .row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 24px;
-    }
+.change {
+  min-width: 160px;
+  text-align: right;
+}
 
-    .symbol {
-        font-weight: 600;
-        letter-spacing: 0.06em;
-    }
+.green { color: var(--green); }
+.red   { color: var(--red); }
 
-    .change {
-        min-width: 140px;
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-    }
-
-    .change.green { color: var(--green); }
-    .change.red   { color: var(--red); }
-
-    .footer {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 12px;
-        color: var(--text-muted);
-        margin-top: 10px;
-    }
-
-    .dots {
-        display: flex;
-        gap: 6px;
-    }
-
-    .dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        border: 1px solid var(--accent);
-        background: transparent;
-        opacity: 0.4;
-    }
-
-    .dot.active {
-        background: var(--accent);
-        opacity: 1;
-    }
-
-    .updated {
-        font-size: 11px;
-        text-align: right;
-        min-width: 120px;
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-        .page { transition: none; }
-    }
+/* Footer time */
+.updated {
+  margin-top: 26px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--muted);
+}
 </style>
 </head>
 <body>
 
 <div class="safe">
 
-    <!-- Page 1: Gainers -->
-    <div id="page-gainers" class="page active">
-        <div>
-            <div class="header">
-                <div class="title">1h Gainers</div>
-                <div class="subtitle">Top 5 • All coins</div>
-            </div>
-            <div id="gainers-list" class="list"></div>
-        </div>
+  <!-- GAINERS PAGE -->
+  <div id="page-gainers" class="page active">
+    <div class="title">1H GAINERS</div>
+    <div id="gainers-list" class="list"></div>
+    <div id="time1" class="updated">Updating...</div>
+  </div>
 
-        <div class="footer">
-            <div class="dots">
-                <div class="dot active" id="dot-gainers"></div>
-                <div class="dot" id="dot-losers"></div>
-            </div>
-            <div class="updated" id="updated-time">Updating…</div>
-        </div>
-    </div>
-
-    <!-- Page 2: Losers -->
-    <div id="page-losers" class="page">
-        <div>
-            <div class="header">
-                <div class="title">1h Losers</div>
-                <div class="subtitle">Top 5 • All coins</div>
-            </div>
-            <div id="losers-list" class="list"></div>
-        </div>
-
-        <div class="footer">
-            <div class="dots">
-                <div class="dot" id="dot-gainers-2"></div>
-                <div class="dot active" id="dot-losers-2"></div>
-            </div>
-            <div class="updated" id="updated-time-2">Updating…</div>
-        </div>
-    </div>
+  <!-- LOSERS PAGE -->
+  <div id="page-losers" class="page">
+    <div class="title">1H LOSERS</div>
+    <div id="losers-list" class="list"></div>
+    <div id="time2" class="updated">Updating...</div>
+  </div>
 
 </div>
 
 <script>
-    // ---------- CONFIG ----------
-    const PAGE_SWITCH_MS = 6000;          // 6s per page
-    const REFRESH_MS     = 5 * 60 * 1000; // data refresh (5 min for now)
+/* -------- CONFIG -------- */
+const PAGE_SWITCH_MS = 6000;      // Page rotation time
+const REFRESH_MS = 5 * 60 * 1000; // Data refresh interval (5 min)
 
-    let currentPage = "gainers";
+/* -------- CREATE ROWS -------- */
+function createRows(containerId, colorClass) {
+  const container = document.getElementById(containerId);
+  const rows = [];
 
-    // ---------- HELPER: CREATE 5 ROWS ----------
-    function createRows(containerId, colorClass) {
-        const container = document.getElementById(containerId);
-        const rows = [];
-        for (let i = 0; i < 5; i++) {
-            const row = document.createElement("div");
-            row.className = "row";
+  for (let i = 0; i < 5; i++) {
+    const row = document.createElement("div");
+    row.className = "row";
 
-            const sym = document.createElement("span");
-            sym.className = "symbol";
-            sym.textContent = "---";
+    const sym = document.createElement("span");
+    sym.className = "symbol";
+    sym.textContent = "---";
 
-            const chg = document.createElement("span");
-            chg.className = "change " + colorClass;
-            chg.textContent = "--.--%";
+    const chg = document.createElement("span");
+    chg.className = "change " + colorClass;
+    chg.textContent = "--.--%";
 
-            row.appendChild(sym);
-            row.appendChild(chg);
-            container.appendChild(row);
+    row.appendChild(sym);
+    row.appendChild(chg);
+    container.appendChild(row);
 
-            rows.push({ sym, chg });
-        }
-        return rows;
-    }
+    rows.push({ sym, chg });
+  }
+  return rows;
+}
 
-    const gainersRows = createRows("gainers-list", "green");
-    const losersRows  = createRows("losers-list", "red");
+const gainersRows = createRows("gainers-list", "green");
+const losersRows  = createRows("losers-list",  "red");
 
-    // ---------- PAGE SWITCHING ----------
-    function showPage(name) {
-        currentPage = name;
+/* -------- PAGE SWITCH -------- */
+let currentPage = "gainers";
 
-        const gainersPage = document.getElementById("page-gainers");
-        const losersPage  = document.getElementById("page-losers");
+function showPage(name) {
+  currentPage = name;
 
-        if (name === "gainers") {
-            gainersPage.classList.add("active");
-            losersPage.classList.remove("active");
-        } else {
-            losersPage.classList.add("active");
-            gainersPage.classList.remove("active");
-        }
+  document.getElementById("page-gainers").classList.toggle("active", name === "gainers");
+  document.getElementById("page-losers").classList.toggle("active", name === "losers");
+}
 
-        // single pair of dots on each page
-        const onGainers = (name === "gainers");
-        document.getElementById("dot-gainers").classList.toggle("active", onGainers);
-        document.getElementById("dot-losers").classList.toggle("active", !onGainers);
-        document.getElementById("dot-gainers-2").classList.toggle("active", onGainers);
-        document.getElementById("dot-losers-2").classList.toggle("active", !onGainers);
-    }
+setInterval(() => {
+  showPage(currentPage === "gainers" ? "losers" : "gainers");
+}, PAGE_SWITCH_MS);
 
-    // start auto switch
-    setInterval(() => {
-        showPage(currentPage === "gainers" ? "losers" : "gainers");
-    }, PAGE_SWITCH_MS);
+/* -------- TIME -------- */
+function setUpdatedTime(id) {
+  const el = document.getElementById(id);
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2,"0");
+  const m = String(now.getMinutes()).padStart(2,"0");
+  el.textContent = "Updated " + h + ":" + m;
+}
 
-    // ---------- TIME LABEL ----------
-    function setUpdatedTime(id) {
-        const el = document.getElementById(id);
-        const now = new Date();
-        const hh = String(now.getHours()).padStart(2, "0");
-        const mm = String(now.getMinutes()).padStart(2, "0");
-        el.textContent = "Updated " + hh + ":" + mm;
-    }
+/* -------- DATA APPLY -------- */
+function applyData(gainers, losers) {
 
-    // ---------- APPLY DATA TO UI ----------
-    function applyData(gainers, losers) {
-        gainers.slice(0, 5).forEach((c, i) => {
-            if (!gainersRows[i]) return;
-            gainersRows[i].sym.textContent = c.symbol;
-            gainersRows[i].chg.textContent =
-                (c.change > 0 ? "+ " : "") + c.change.toFixed(2) + "%";
-        });
+  gainers.slice(0,5).forEach((c, i) => {
+    gainersRows[i].sym.textContent = c.symbol;
+    gainersRows[i].chg.textContent = "+ " + c.change.toFixed(2) + "%";
+  });
 
-        losers.slice(0, 5).forEach((c, i) => {
-            if (!losersRows[i]) return;
-            losersRows[i].sym.textContent =
-                c.symbol;
-            losersRows[i].chg.textContent =
-                c.change.toFixed(2) + "%";
-        });
+  losers.slice(0,5).forEach((c, i) => {
+    losersRows[i].sym.textContent = c.symbol;
+    losersRows[i].chg.textContent = c.change.toFixed(2) + "%";
+  });
 
-        setUpdatedTime("updated-time");
-        setUpdatedTime("updated-time-2");
-    }
+  setUpdatedTime("time1");
+  setUpdatedTime("time2");
+}
 
-    // ---------- MOCK DATA FOR TESTING ----------
-    function loadDataMock() {
-        const demoGainers = [
-            { symbol: "VRA",   change: 36.72 },
-            { symbol: "SBTC",  change:  8.47 },
-            { symbol: "HSK",   change:  4.36 },
-            { symbol: "OOB",   change:  4.04 },
-            { symbol: "ICNT",  change:  3.82 }
-        ];
+/* -------- TEMP TEST DATA -------- */
+function loadData() {
 
-        const demoLosers = [
-            { symbol: "MYX",   change: -14.96 },
-            { symbol: "WOJAK", change:  -8.65 },
-            { symbol: "IRYS",  change:  -8.34 },
-            { symbol: "BEAT",  change:  -6.94 },
-            { symbol: "META",  change:  -6.68 }
-        ];
+  // Example output (this is working demo data only)
+  const gainers = [
+    {symbol:"VRA", change:36.72},
+    {symbol:"SBTC",change: 8.47},
+    {symbol:"HSK", change: 4.36},
+    {symbol:"OOB", change: 4.04},
+    {symbol:"ICNT",change: 3.82},
+  ];
 
-        applyData(demoGainers, demoLosers);
-    }
+  const losers = [
+    {symbol:"MYX", change:-14.96},
+    {symbol:"WOJAK",change:-8.65},
+    {symbol:"IRYS",change:-8.34},
+    {symbol:"BEAT",change:-6.94},
+    {symbol:"META",change:-6.68}
+  ];
 
-    // main load function – for now just mock
-    function loadData() {
-        loadDataMock();
-        // later we’ll replace with real API and still call applyData(...)
-    }
+  applyData(gainers, losers);
+}
 
-    loadData();
-    setInterval(loadData, REFRESH_MS);
+loadData();
+setInterval(loadData, REFRESH_MS);
 </script>
 
 </body>
