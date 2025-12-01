@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Kraken 1H Gainers & Losers</title>
+
+<style>
+:root {
+  --bg: #000;
+  --fg: #fff;
+  --muted: #9b9b9b;
+  --green: #00ff7f;
+  --red: #ff5252;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 640px;
+  height: 640px;
+  background: #000;
+  font-family: Arial, sans-serif, Roboto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg);
+}
+
+/* Circle safe display */
+.safe {
+  width: 600px;
+  height: 600px;
+  border-radius: 70%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+/* Pages */
+.page {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;  /* CENTER VERTICALLY */
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.page.active { opacity: 1; }
+
+/* Title */
+.title {
+  text-align: center;
+  font-size: 46px;
+  font-weight: 500;
+  margin-bottom: 50px;
+}
+
+/* List */
+.list {
+  width: 78%;            /* CONTROL horizontal layout */
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Row */
+.row {
+  display: flex;
+  align-items: baseline;
+  font-size: 42px;
+  font-weight: 500;
+}
+
+/* Token name */
+.symbol {
+  flex: 0 0 52%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Percentage */
+.change {
+  flex: 0 0 48%;
+  margin-left: 18px;     /* SLIGHT SPACE BETWEEN NAME AND % */
+  text-align: right;
+}
+
+/* Colors */
+.green { color: var(--green); }
+.red   { color: var(--red); }
+
+/* Footer */
+.updated {
+  margin-top: 50px;
+  font-size: 32px;
+  text-align: center;
+  color: var(--muted);
+}
+</style>
+</head>
+
+<body>
+
+<div class="safe">
+
+  <!-- GAINERS -->
+  <div id="page-gainers" class="page active">
+    <div class="title">1H GAINERS</div>
+    <div id="gainers-list" class="list"></div>
+    <div id="time1" class="updated">Loading...</div>
+  </div>
+
+  <!-- LOSERS -->
+  <div id="page-losers" class="page">
+    <div class="title">1H LOSERS</div>
+    <div id="losers-list" class="list"></div>
+    <div id="time2" class="updated">Loading...</div>
+  </div>
+
+</div>
+
+<script>
+/* ===================== CONFIG ===================== */
+
+// Page flip between gainers / losers
+const PAGE_SWITCH_MS = 6000;
+
+// How often to refresh data from CoinGecko
+// (multi-page fetch is heavy, so 10 min is safer)
+const REFRESH_MS = 10 * 60 * 1000;
+
+// CoinGecko paging config
+const PER_PAGE = 250;      // max allowed
+const MAX_PAGES = 20;      // 20 * 250 = 5000 coins; increase if you want
+const MIN_VOLUME_USD = 50000; // filter out low-liquidity junk
+const REQUEST_DELAY_MS = 1100; // delay between page requests (rate-limit friendly)
+
+/* ===================== UI SETUP ===================== */
+
+function createRows(containerId, colorClass) {
+  const container = document.getElementById(containerId);
+  const rows = [];
+  for (let i = 0; i < 5; i++) {
+    const row = document.createElement("div");
+    row.className = "row";
+
+    const sym = document.createElement("span");
+    sym.className = "symbol";
+    sym.textContent = "---";
+
+    const chg = document.createElement("span");
+    chg.className = "change " + colorClass;
+    chg.textContent = "--.--%";
+
+    row.appendChild(sym);
+    row.appendChild(chg);
+    container.appendChild(row);
+    rows.push({ sym, chg });
+  }
+  return rows;
+}
+
+const gainersRows = createRows("gainers-list", "green");
+const losersRows  = createRows("losers-list",  "red");
+
+/* ===================== PAGE ANIMATION ===================== */
+
+let currentPage = "gainers";
+
+function showPage(name) {
+  currentPage = name;
+  document.getElementById("page-gainers").classList.toggle("active", name === "gainers");
+  document.getElementById("page-losers").classList.toggle("active", name === "losers");
+}
+
+setInterval(() => {
+  showPage(currentPage === "gainers" ? "losers" : "gainers");
+}, PAGE_SWITCH_MS);
+
+/* ===================== TIME LABEL ===================== */
+
+function setUpdatedTime(id) {
+  const el = document.getElementById(id);
+  const d = new Date();
+  el.textContent =
+    "Updated " +
+    String(d.getHours()).padStart(2, "0") + ":" +
+    String(d.getMinutes()).padStart(2, "0");
+}
+
+/* ===================== COINGECKO FETCH ===================== */
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchPage(page) {
+  const url =
+    "https://api.coingecko.com/api/v3/coins/markets" +
+    "?vs_currency=usd" +
+    "&order=market_cap_desc" +
+    `&per_page=${PER_PAGE}` +
+    `&page=${page}` +
+    "&sparkline=false" +
+    "&price_change_percentage=1h";
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error("CoinGecko error on page " + page + ": " + res.status);
+  }
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data;
+}
+
+async function fetchAllPages() {
+  const all = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    try {
+      const data = await fetchPage(page);
+      if (!data.length) break; // no more pages
+      all.push(...data);
+      await sleep(REQUEST_DELAY_MS);
+    } catch (e) {
+      console.error("Error loading page", page, e);
+      break; // stop on first error, keep what we already have
+    }
+  }
+  return all;
+}
+
+/* ===================== DATA PROCESSING ===================== */
+
+function applyData(gainers, losers) {
+  gainers.forEach((c, i) => {
+    if (!gainersRows[i]) return;
+    gainersRows[i].sym.textContent = c.symbol;
+    gainersRows[i].chg.textContent =
+      (c.change >= 0 ? "+ " : "") + c.change.toFixed(2) + "%";
+  });
+
+  losers.forEach((c, i) => {
+    if (!losersRows[i]) return;
+    losersRows[i].sym.textContent = c.symbol;
+    losersRows[i].chg.textContent = c.change.toFixed(2) + "%";
+  });
+
+  setUpdatedTime("time1");
+  setUpdatedTime("time2");
+}
+
+/* ===================== MAIN LOAD FUNCTION ===================== */
+
+async function loadData() {
+  try {
+    // optional: show loading state
+    applyData(
+      [
+        { symbol: "LOADING", change: 0 },
+        { symbol: "", change: 0 },
+        { symbol: "", change: 0 },
+        { symbol: "", change: 0 },
+        { symbol: "", change: 0 }
+      ],
+      [
+        { symbol: "PLEASE", change: 0 },
+        { symbol: "WAIT", change: 0 },
+        { symbol: "", change: 0 },
+        { symbol: "", change: 0 },
+        { symbol: "", change: 0 }
+      ]
+    );
+
+    const all = await fetchAllPages();
+    if (!all.length) {
+      console.error("No data from CoinGecko");
+      return;
+    }
+
+    // filter: must have 1h change and decent volume
+    const filtered = all.filter(c =>
+      c.price_change_percentage_1h_in_currency !== null &&
+      c.price_change_percentage_1h_in_currency !== undefined &&
+      typeof c.total_volume === "number" &&
+      c.total_volume >= MIN_VOLUME_USD
+    );
+
+    // sort for gainers (descending 1h %)
+    const gainersRaw = filtered
+      .slice()
+      .sort(
+        (a, b) =>
+          b.price_change_percentage_1h_in_currency -
+          a.price_change_percentage_1h_in_currency
+      )
+      .slice(0, 5)
+      .map(c => ({
+        symbol: c.symbol.toUpperCase(),
+        change: c.price_change_percentage_1h_in_currency
+      }));
+
+    // sort for losers (ascending 1h %)
+    const losersRaw = filtered
+      .slice()
+      .sort(
+        (a, b) =>
+          a.price_change_percentage_1h_in_currency -
+          b.price_change_percentage_1h_in_currency
+      )
+      .slice(0, 5)
+      .map(c => ({
+        symbol: c.symbol.toUpperCase(),
+        change: c.price_change_percentage_1h_in_currency
+      }));
+
+    applyData(gainersRaw, losersRaw);
+  } catch (e) {
+    console.error("loadData error", e);
+  }
+}
+
+/* first load + periodic refresh */
+loadData();
+setInterval(loadData, REFRESH_MS);
+</script>
+
+</body>
+</html>
