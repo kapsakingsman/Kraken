@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>1h Gainers & Losers</title>
+<title>1h Gainers & Losers (All)</title>
 <style>
 body {
     width: 480px;
@@ -22,7 +22,7 @@ h2 { font-size: 26px; margin: 10px 0; }
     margin: 6px 0;
 }
 .green { color: #00ff7f; }
-.red { color: #ff5252; }
+.red   { color: #ff5252; }
 </style>
 </head>
 <body>
@@ -34,59 +34,119 @@ h2 { font-size: 26px; margin: 10px 0; }
 <div id="losers">Loading...</div>
 
 <script>
-const API =
-  "https://api.coingecko.com/api/v3/coins/markets" +
-  "?vs_currency=usd" +
-  "&order=market_cap_desc" +
-  "&per_page=250" +
-  "&page=1" +
-  "&sparkline=false" +
-  "&price_change_percentage=1h";
+const PER_PAGE = 250;         // max allowed
+const MAX_PAGES = 12;         // 12 * 250 = 3000 coins (approx "all")
+const MIN_VOL_USD = 50000;    // filter out very illiquid coins
+const DELAY_MS = 1200;        // delay between API calls (rate-limit friendly)
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchPage(page) {
+  const url =
+    "https://api.coingecko.com/api/v3/coins/markets" +
+    "?vs_currency=usd" +
+    "&order=market_cap_desc" +
+    `&per_page=${PER_PAGE}` +
+    `&page=${page}` +
+    "&sparkline=false" +
+    "&price_change_percentage=1h";
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("API error on page " + page);
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data;
+}
+
+async function fetchAllPages() {
+  const all = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    try {
+      const data = await fetchPage(page);
+      if (data.length === 0) break;  // no more pages
+      all.push(...data);
+      // small delay before next page
+      await sleep(DELAY_MS);
+    } catch (e) {
+      console.error("Error fetching page", page, e);
+      // stop on first error, but keep what we already have
+      break;
+    }
+  }
+  return all;
+}
 
 async function loadData() {
   try {
-    const res = await fetch(API);
-    if (!res.ok) throw new Error("API blocked");
+    document.getElementById("gainers").textContent = "Loading...";
+    document.getElementById("losers").textContent = "Loading...";
 
-    const data = await res.json();
+    const data = await fetchAllPages();
 
+    if (!data.length) {
+      document.getElementById("gainers").textContent = "No data";
+      document.getElementById("losers").textContent = "No data";
+      return;
+    }
+
+    // filter coins with valid 1h data and some volume
     const filtered = data.filter(c =>
       c.price_change_percentage_1h_in_currency !== null &&
-      c.total_volume >= 50000
+      c.price_change_percentage_1h_in_currency !== undefined &&
+      typeof c.total_volume === "number" &&
+      c.total_volume >= MIN_VOL_USD
     );
 
+    // top 5 gainers
     const gainers = [...filtered]
-      .sort((a,b)=>b.price_change_percentage_1h_in_currency - a.price_change_percentage_1h_in_currency)
-      .slice(0,5);
+      .sort((a, b) =>
+        b.price_change_percentage_1h_in_currency -
+        a.price_change_percentage_1h_in_currency
+      )
+      .slice(0, 5);
 
+    // top 5 losers
     const losers = [...filtered]
-      .sort((a,b)=>a.price_change_percentage_1h_in_currency - b.price_change_percentage_1h_in_currency)
-      .slice(0,5);
+      .sort((a, b) =>
+        a.price_change_percentage_1h_in_currency -
+        b.price_change_percentage_1h_in_currency
+      )
+      .slice(0, 5);
 
     document.getElementById("gainers").innerHTML =
-      gainers.map(c =>
-        `<div class="item">
-            <span>${c.symbol.toUpperCase()}</span>
-            <span class="green">+${c.price_change_percentage_1h_in_currency.toFixed(2)}%</span>
-         </div>`
-      ).join("");
+      gainers.map(c => `
+        <div class="item">
+          <span>${c.symbol.toUpperCase()}</span>
+          <span class="green">
+            ${c.price_change_percentage_1h_in_currency >= 0 ? "+" : ""}
+            ${c.price_change_percentage_1h_in_currency.toFixed(2)}%
+          </span>
+        </div>
+      `).join("");
 
     document.getElementById("losers").innerHTML =
-      losers.map(c =>
-        `<div class="item">
-            <span>${c.symbol.toUpperCase()}</span>
-            <span class="red">${c.price_change_percentage_1h_in_currency.toFixed(2)}%</span>
-         </div>`
-      ).join("");
+      losers.map(c => `
+        <div class="item">
+          <span>${c.symbol.toUpperCase()}</span>
+          <span class="red">
+            ${c.price_change_percentage_1h_in_currency.toFixed(2)}%
+          </span>
+        </div>
+      `).join("");
 
   } catch (e) {
-    document.getElementById("gainers").innerHTML = "API blocked";
-    document.getElementById("losers").innerHTML = "Retry later";
+    console.error(e);
+    document.getElementById("gainers").textContent = "Error";
+    document.getElementById("losers").textContent = "Error";
   }
 }
 
 loadData();
-setInterval(loadData, 90000); // refresh every 90s
+
+// Because this now hits multiple pages, refresh less often to avoid limits
+setInterval(loadData, 5 * 60 * 1000); // every 5 minutes
 </script>
 
 </body>
