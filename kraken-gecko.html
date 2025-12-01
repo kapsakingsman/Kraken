@@ -2,151 +2,309 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>1h Gainers & Losers (All)</title>
+<title>Kraken 1h Gainers & Losers</title>
 <style>
-body {
-    width: 480px;
-    height: 480px;
-    margin: 0;
-    background: black;
-    color: white;
-    font-family: Arial, sans-serif;
-    padding: 20px;
-    box-sizing: border-box;
-}
-h2 { font-size: 26px; margin: 10px 0; }
-.item {
-    display: flex;
-    justify-content: space-between;
-    font-size: 22px;
-    margin: 6px 0;
-}
-.green { color: #00ff7f; }
-.red   { color: #ff5252; }
+    :root {
+        --bg: #000000;
+        --text-main: #f5f5f5;
+        --text-muted: #bbbbbb;
+        --green: #00ff7f;
+        --red: #ff5252;
+        --accent: #ffffff;
+    }
+
+    * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+    }
+
+    body {
+        width: 480px;
+        height: 480px;
+        background: var(--bg);
+        color: var(--text-main);
+        font-family: Arial, sans-serif;
+        overflow: hidden;
+        padding: 28px;
+    }
+
+    .container {
+        width: 100%;
+        height: 100%;
+        position: relative;
+    }
+
+    .page {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        opacity: 0;
+        transition: opacity 0.45s ease-in-out;
+        pointer-events: none;
+    }
+
+    .page.visible {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 8px;
+    }
+
+    .title {
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+    }
+
+    .subtitle {
+        font-size: 14px;
+        color: var(--text-muted);
+    }
+
+    .list {
+        margin-top: 6px;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        gap: 6px;
+        padding-top: 4px;
+    }
+
+    .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 22px;
+    }
+
+    .symbol {
+        font-weight: 600;
+        letter-spacing: 0.06em;
+    }
+
+    .change {
+        min-width: 120px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .change.green {
+        color: var(--green);
+    }
+
+    .change.red {
+        color: var(--red);
+    }
+
+    .footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-top: 8px;
+    }
+
+    .dots {
+        display: flex;
+        gap: 6px;
+    }
+
+    .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        border: 1px solid var(--accent);
+        background: transparent;
+        opacity: 0.4;
+    }
+
+    .dot.active {
+        background: var(--accent);
+        opacity: 1;
+    }
+
+    .updated {
+        font-size: 11px;
+    }
+
+    /* Just in case – reduce animation if system prefers it */
+    @media (prefers-reduced-motion: reduce) {
+        .page {
+            transition: none;
+        }
+    }
 </style>
 </head>
 <body>
 
-<h2>1h Gainers</h2>
-<div id="gainers">Loading...</div>
+<div class="container">
 
-<h2>1h Losers</h2>
-<div id="losers">Loading...</div>
+    <!-- Page 1: Gainers -->
+    <div id="page-gainers" class="page visible">
+        <div>
+            <div class="header">
+                <div class="title">1h Gainers</div>
+                <div class="subtitle">Top 5 • All Coins</div>
+            </div>
+            <div id="gainers-list" class="list">
+                <!-- rows are injected by JS -->
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="dots">
+                <div class="dot active" id="dot-gainers"></div>
+                <div class="dot" id="dot-losers"></div>
+            </div>
+            <div class="updated" id="updated-time-gainers">Updating…</div>
+        </div>
+    </div>
+
+    <!-- Page 2: Losers -->
+    <div id="page-losers" class="page">
+        <div>
+            <div class="header">
+                <div class="title">1h Losers</div>
+                <div class="subtitle">Top 5 • All Coins</div>
+            </div>
+            <div id="losers-list" class="list">
+                <!-- rows are injected by JS -->
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="dots">
+                <div class="dot" id="dot-gainers-2"></div>
+                <div class="dot active" id="dot-losers-2"></div>
+            </div>
+            <div class="updated" id="updated-time-losers">Updating…</div>
+        </div>
+    </div>
+
+</div>
 
 <script>
-const PER_PAGE = 250;         // max allowed
-const MAX_PAGES = 12;         // 12 * 250 = 3000 coins (approx "all")
-const MIN_VOL_USD = 50000;    // filter out very illiquid coins
-const DELAY_MS = 1200;        // delay between API calls (rate-limit friendly)
+    // ----- CONFIG -----
+    const PAGE_SWITCH_MS = 6000;   // time each page stays visible
+    const REFRESH_MS     = 5 * 60 * 1000; // data refresh period (5 min for now)
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+    let currentPage = "gainers";   // or "losers"
 
-async function fetchPage(page) {
-  const url =
-    "https://api.coingecko.com/api/v3/coins/markets" +
-    "?vs_currency=usd" +
-    "&order=market_cap_desc" +
-    `&per_page=${PER_PAGE}` +
-    `&page=${page}` +
-    "&sparkline=false" +
-    "&price_change_percentage=1h";
+    // ----- CREATE ROW ELEMENTS ONCE -----
+    function createRows(containerId, colorClass) {
+        const container = document.getElementById(containerId);
+        const rows = [];
+        for (let i = 0; i < 5; i++) {
+            const row = document.createElement("div");
+            row.className = "row";
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("API error on page " + page);
-  const data = await res.json();
-  if (!Array.isArray(data)) return [];
-  return data;
-}
+            const sym = document.createElement("span");
+            sym.className = "symbol";
+            sym.textContent = "---";
 
-async function fetchAllPages() {
-  const all = [];
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    try {
-      const data = await fetchPage(page);
-      if (data.length === 0) break;  // no more pages
-      all.push(...data);
-      // small delay before next page
-      await sleep(DELAY_MS);
-    } catch (e) {
-      console.error("Error fetching page", page, e);
-      // stop on first error, but keep what we already have
-      break;
-    }
-  }
-  return all;
-}
+            const chg = document.createElement("span");
+            chg.className = "change " + colorClass;
+            chg.textContent = "--.--%";
 
-async function loadData() {
-  try {
-    document.getElementById("gainers").textContent = "Loading...";
-    document.getElementById("losers").textContent = "Loading...";
-
-    const data = await fetchAllPages();
-
-    if (!data.length) {
-      document.getElementById("gainers").textContent = "No data";
-      document.getElementById("losers").textContent = "No data";
-      return;
+            row.appendChild(sym);
+            row.appendChild(chg);
+            container.appendChild(row);
+            rows.push({ sym, chg });
+        }
+        return rows;
     }
 
-    // filter coins with valid 1h data and some volume
-    const filtered = data.filter(c =>
-      c.price_change_percentage_1h_in_currency !== null &&
-      c.price_change_percentage_1h_in_currency !== undefined &&
-      typeof c.total_volume === "number" &&
-      c.total_volume >= MIN_VOL_USD
-    );
+    const gainersRows = createRows("gainers-list", "green");
+    const losersRows  = createRows("losers-list", "red");
 
-    // top 5 gainers
-    const gainers = [...filtered]
-      .sort((a, b) =>
-        b.price_change_percentage_1h_in_currency -
-        a.price_change_percentage_1h_in_currency
-      )
-      .slice(0, 5);
+    // ----- PAGE SWITCHING -----
+    function showPage(name) {
+        currentPage = name;
 
-    // top 5 losers
-    const losers = [...filtered]
-      .sort((a, b) =>
-        a.price_change_percentage_1h_in_currency -
-        b.price_change_percentage_1h_in_currency
-      )
-      .slice(0, 5);
+        const gainersPage = document.getElementById("page-gainers");
+        const losersPage  = document.getElementById("page-losers");
 
-    document.getElementById("gainers").innerHTML =
-      gainers.map(c => `
-        <div class="item">
-          <span>${c.symbol.toUpperCase()}</span>
-          <span class="green">
-            ${c.price_change_percentage_1h_in_currency >= 0 ? "+" : ""}
-            ${c.price_change_percentage_1h_in_currency.toFixed(2)}%
-          </span>
-        </div>
-      `).join("");
+        gainersPage.classList.toggle("visible", name === "gainers");
+        losersPage.classList.toggle("visible",  name === "losers");
 
-    document.getElementById("losers").innerHTML =
-      losers.map(c => `
-        <div class="item">
-          <span>${c.symbol.toUpperCase()}</span>
-          <span class="red">
-            ${c.price_change_percentage_1h_in_currency.toFixed(2)}%
-          </span>
-        </div>
-      `).join("");
+        // update dots
+        document.getElementById("dot-gainers").classList.toggle("active", name === "gainers");
+        document.getElementById("dot-losers").classList.toggle("active",  name === "losers");
+        document.getElementById("dot-gainers-2").classList.toggle("active", name === "gainers");
+        document.getElementById("dot-losers-2").classList.toggle("active",  name === "losers");
+    }
 
-  } catch (e) {
-    console.error(e);
-    document.getElementById("gainers").textContent = "Error";
-    document.getElementById("losers").textContent = "Error";
-  }
-}
+    setInterval(() => {
+        showPage(currentPage === "gainers" ? "losers" : "gainers");
+    }, PAGE_SWITCH_MS);
 
-loadData();
+    // ----- TIME LABEL -----
+    function setUpdatedTime(id) {
+        const el = document.getElementById(id);
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, "0");
+        const mm = String(now.getMinutes()).padStart(2, "0");
+        el.textContent = "Updated " + hh + ":" + mm;
+    }
 
-// Because this now hits multiple pages, refresh less often to avoid limits
-setInterval(loadData, 5 * 60 * 1000); // every 5 minutes
+    // ----- DATA LOADING (CURRENTLY MOCKED) -----
+    function applyData(gainers, losers) {
+        gainers.slice(0, 5).forEach((c, i) => {
+            if (!gainersRows[i]) return;
+            gainersRows[i].sym.textContent = c.symbol;
+            gainersRows[i].chg.textContent = (c.change > 0 ? "+ " : "") +
+                c.change.toFixed(2) + "%";
+        });
+
+        losers.slice(0, 5).forEach((c, i) => {
+            if (!losersRows[i]) return;
+            losersRows[i].sym.textContent = c.symbol;
+            losersRows[i].chg.textContent = c.change.toFixed(2) + "%";
+        });
+
+        setUpdatedTime("updated-time-gainers");
+        setUpdatedTime("updated-time-losers");
+    }
+
+    // For now, just mock data so UI works.
+    function loadDataMock() {
+        const demoGainers = [
+            { symbol: "VRA",    change: 36.72 },
+            { symbol: "SBTC",   change:  8.47 },
+            { symbol: "HSK",    change:  4.36 },
+            { symbol: "OOB",    change:  4.04 },
+            { symbol: "ICNT",   change:  3.82 }
+        ];
+
+        const demoLosers = [
+            { symbol: "MYX",    change: -14.96 },
+            { symbol: "WOJAK",  change:  -8.65 },
+            { symbol: "IRYS",   change:  -8.34 },
+            { symbol: "BEAT",   change:  -6.94 },
+            { symbol: "META",   change:  -6.68 }
+        ];
+
+        applyData(demoGainers, demoLosers);
+    }
+
+    // Later we’ll replace this with real CoinGecko fetch.
+    function loadData() {
+        // TODO: plug in CoinGecko API here (1h change, all coins)
+        loadDataMock();
+    }
+
+    loadData();
+    setInterval(loadData, REFRESH_MS);
 </script>
 
 </body>
