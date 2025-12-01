@@ -30,7 +30,7 @@ body {
   color: var(--fg);
 }
 
-/* Circular safe display */
+/* Circle safe display */
 .safe {
   width: 520px;
   height: 520px;
@@ -41,12 +41,12 @@ body {
   position: relative;
 }
 
-/* Screen pages */
+/* Pages */
 .page {
   position: absolute;
   width: 100%;
   height: 100%;
-  padding: 32px;
+  padding: 26px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -59,9 +59,8 @@ body {
 /* Title */
 .title {
   text-align: center;
-  font-size: 44px;
+  font-size: 48px;   /* BIGGER */
   font-weight: 700;
-  letter-spacing: 1px;
   margin-bottom: 16px;
 }
 
@@ -69,20 +68,20 @@ body {
 .list {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 6px;          /* TIGHTER */
 }
 
 /* Row */
 .row {
   display: flex;
   justify-content: space-between;
-  font-size: 34px;
+  font-size: 38px;   /* BIGGER */
   font-weight: 700;
 }
 
 /* Token name */
 .symbol {
-  max-width: 52%;
+  max-width: 68%;     /* MORE SPACE FOR NAME */
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -90,7 +89,7 @@ body {
 
 /* Percentage */
 .change {
-  min-width: 105px;
+  min-width: 78px;   /* MUCH CLOSER */
   text-align: right;
 }
 
@@ -101,7 +100,7 @@ body {
 /* Footer */
 .updated {
   margin-top: 12px;
-  font-size: 13px;
+  font-size: 14px;
   text-align: center;
   color: var(--muted);
 }
@@ -129,7 +128,7 @@ body {
 </div>
 
 <script>
-/* CONFIG */
+/* SETTINGS */
 const PAGE_SWITCH_MS = 6000;
 const REFRESH_MS = 5 * 60 * 1000;
 
@@ -137,6 +136,7 @@ const REFRESH_MS = 5 * 60 * 1000;
 function createRows(containerId, colorClass) {
   const container = document.getElementById(containerId);
   const rows = [];
+
   for (let i = 0; i < 5; i++) {
     const row = document.createElement("div");
     row.className = "row";
@@ -158,9 +158,9 @@ function createRows(containerId, colorClass) {
 }
 
 const gainersRows = createRows("gainers-list", "green");
-const losersRows  = createRows("losers-list", "red");
+const losersRows  = createRows("losers-list",  "red");
 
-/* PAGE SWITCH */
+/* PAGE ANIMATION */
 let currentPage = "gainers";
 
 function showPage(name) {
@@ -199,7 +199,7 @@ function applyData(gainers, losers) {
   setUpdatedTime("time2");
 }
 
-/* DEMO DATA (replace later with real API) */
+/* DEMO DATA */
 function loadData() {
 
   const gainers = [
