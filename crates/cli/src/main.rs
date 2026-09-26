@@ -216,7 +216,7 @@ fn bench(
         ms(all_tiles.last().copied().unwrap_or_default()),
         all_tiles.len()
     );
-    per_page.sort_by(|a, b| b.1.cmp(&a.1));
+    per_page.sort_by_key(|p| std::cmp::Reverse(p.1));
     println!("  slowest pages:");
     for (page, wall, tiles, slowest) in per_page.iter().take(5) {
         println!(
