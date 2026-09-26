@@ -185,7 +185,12 @@ fn stitched_tiles_match_a_full_page_render() {
                 diff < 0.02,
                 "page {page} at {scale:?}: tiles differ from the full render by {diff:.3}/255"
             );
-            let ink = stitched.chunks_exact(4).filter(|p| p[0] < 200).count();
+            let ink = stitched
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[0] < 200)
+                .count();
             assert!(ink > 100, "page {page} rendered blank");
         }
     }

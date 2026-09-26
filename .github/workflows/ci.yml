@@ -50,3 +50,11 @@ jobs:
         shell: bash
         run: |
           cargo run --release -p pdf-cli -- bench crates/engine/tests/data/sample.pdf --zoom 200
+
+      - name: App smoke test (opens the window, scrolls 300 frames, closes)
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        shell: bash
+        env:
+          KRAKEN_SMOKE_TEST_FRAMES: "300"
+        run: cargo run --release -p kraken-pdf -- crates/engine/tests/data/sample.pdf

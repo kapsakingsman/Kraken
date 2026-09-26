@@ -1,0 +1,13 @@
+[package]
+name = "kraken-pdf"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Kraken PDF desktop app."
+
+[dependencies]
+crossbeam-channel = "0.5.17"
+eframe = "0.36.2"
+pdf-engine = { path = "../engine" }
+pdf-view = { path = "../view" }
+rfd = "0.17.2"

@@ -1,0 +1,9 @@
+[package]
+name = "pdf-view"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "UI-independent viewer logic: page layout, smooth scrolling and frame statistics."
+
+[dependencies]
+pdf-engine = { path = "../engine" }

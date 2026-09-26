@@ -5,7 +5,8 @@ A fast PDF reader and editor for Windows, written in Rust on top of PDFium.
 Goals, in order: Acrobat-level sharp rendering, smooth scrolling and zooming at up to 144 Hz,
 then annotations, forms and signing. See [docs/ROADMAP.md](docs/ROADMAP.md) for the stages.
 
-**Current stage:** 1, the rendering engine and a command-line tool. There is no window yet.
+**Current stage:** 2, a window that scrolls smoothly at up to 144 Hz with a frame timing
+display. Pages are still blank placeholders; their content appears in stage 3.
 
 ## Setup (Windows 11)
 
@@ -24,6 +25,31 @@ then annotations, forms and signing. See [docs/ROADMAP.md](docs/ROADMAP.md) for 
    ```powershell
    cargo test --workspace
    ```
+
+## The app
+
+```powershell
+cargo run --release -p kraken-pdf -- "C:\path\to\file.pdf"
+```
+
+Without a file it shows a 200-page demo layout. Open files with **Ctrl+O** or by dropping them
+on the window.
+
+| Input | Action |
+|---|---|
+| Mouse wheel, touchpad | Scroll (wheel steps are animated, touchpad follows your fingers) |
+| Arrow keys, Page Up/Down, Space, Shift+Space | Scroll |
+| Home / End | First / last page |
+| Scrollbar | Drag the thumb, or click the track |
+| F3 | Show or hide the frame timing HUD |
+
+### Checking 144 Hz smoothness
+
+1. Set your monitor to 144 Hz: Settings > System > Display > Advanced display > Choose a
+   refresh rate.
+2. Start the app with `--release` (debug builds are much slower).
+3. Click **Run 8-second scroll test** in the HUD and wait for the result.
+4. PASS means under 1% missed frames and UI CPU time under 3 ms at the 99th percentile.
 
 ## Command-line tool
 
@@ -58,6 +84,8 @@ the same tile pipeline.
 | Path | What it is |
 |---|---|
 | `crates/engine` | Owns PDFium on one dedicated thread, opens documents and renders 512×512 tiles |
+| `crates/view` | UI-independent viewer logic: page layout, smooth scrolling, frame statistics |
+| `crates/app` | `kraken-pdf`, the desktop app (eframe/egui on wgpu) |
 | `crates/cli` | `pdf-cli`: `info`, `render` and `bench` commands |
 | `scripts/` | Downloads PDFium. The version and SHA-256 checksums are pinned in `scripts/pdfium.lock` |
 | `vendor/pdfium` | Downloaded PDFium (not committed) |
@@ -71,3 +99,12 @@ the same tile pipeline.
 - To upgrade: change `version` and the checksums in `scripts/pdfium.lock`, delete
   `vendor\pdfium`, run the fetch script again, and run the tests.
 - PDFium's own licenses are in `vendor/pdfium/licenses`. They must ship with the app.
+
+## Known build issue
+
+If a `cargo update` brings back Windows build errors in `wgpu-hal` about two versions of the
+`windows` crate, pin them to the same version again:
+
+```powershell
+cargo update -p windows@0.61.3 --precise 0.62.2
+```

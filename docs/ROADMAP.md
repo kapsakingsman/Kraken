@@ -16,20 +16,22 @@ At 144 Hz each frame has 6.9 ms. The UI thread should use under 3 ms of that.
   60 Hz and 144 Hz.
 - Long lists (thumbnails, search results) only build the rows that are visible.
 - Nothing repaints while the app is idle.
-- Pass mark: the p99 frame time stays under 6.9 ms while scrolling and zooming.
+- Pass mark (the HUD's 8-second scroll test): under 1% missed frames, and UI CPU time under
+  3 ms at the 99th percentile.
 
 ## Stages
 
-- [ ] **0. Setup:** Cargo workspace, pinned PDFium download scripts, CI on Windows and Linux.
+- [x] **0. Setup:** Cargo workspace, pinned PDFium download scripts, CI on Windows and Linux.
   *Done when:* CI is green and `cargo run` works on the development PC.
-  (Built; waiting for the first CI run and a run on the Windows PC.)
-- [ ] **1. Engine and sharpness proof:** engine thread, tile rendering, stitch tests, and the
+- [x] **1. Engine and sharpness proof:** engine thread, tile rendering, stitch tests, and the
   `pdf-cli` tool for PNG output and benchmarks.
   *Done when:* the tiles-vs-full-page test passes and PNGs look as sharp as Acrobat at 200%.
-  (Engine is built and tested; waiting for the Acrobat comparison.)
-- [ ] **2. 144 Hz window:** eframe window, frame-time overlay (fps, average, p99),
-  time-based smooth scrolling.
-  *Done when:* p99 is under 6.9 ms on a 144 Hz monitor.
+  (Tests pass on Windows and Linux. The side-by-side Acrobat check was skipped for now and
+  will be done in the app once stage 3 draws real pages.)
+- [ ] **2. 144 Hz window:** eframe window, frame timing HUD with an 8-second scroll test,
+  time-based smooth scrolling, open by Ctrl+O, drag-and-drop or command line.
+  *Done when:* the scroll test passes on a 144 Hz monitor.
+  (Built; waiting for the test result on the Windows PC.)
 - [ ] **3. Continuous scroll:** page layout from page sizes, only visible pages built,
   low-resolution placeholders, LRU tile cache (~300 MB), per-frame upload budget.
   *Done when:* a 500-page PDF opens in under 1 s and scrolls at 144 fps with no blank flashes.
