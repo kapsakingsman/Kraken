@@ -1,0 +1,5 @@
+# Pinned PDFium build from https://github.com/bblanchon/pdfium-binaries
+# To upgrade: change the version, download each archive, and update its SHA-256 below.
+version=8066
+win-x64=739a57d597d864297909cc40a2411eba728490c76a0fa25e3ea299c7f6b07020
+linux-x64=0b43f405477cf2cfc4dbff06905093c3309756c6bca1fb9da99234a2ca97fed2
