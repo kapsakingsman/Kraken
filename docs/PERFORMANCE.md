@@ -201,7 +201,28 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
 
    The extra tiles stay within the 300 MB tile cache and are evicted as usual; for single
    notches (the `wheel` scenario) tiles rendered and memory are the same as before.
-7. **The idle test itself was wrong at first.** It started while tiles around the view were
+7. **A slow tile kept rendering after the view had moved on.** PDFium renders a tile in one
+   call, so once a slow tile had started (up to ~0.8 s on the huge-mask PDF), a new zoom
+   step or scroll position had to wait for it. The engine now renders through PDFium's
+   progressive API: PDFium asks the engine every few milliseconds whether to continue, even
+   while scaling a large image, and the engine stops when the UI's new set of wanted tiles
+   no longer contains the tile. (pdfium-render does not expose this API, so a copy with the
+   addition lives in `third_party/`.)
+
+   | Stopping a tile nobody wants any more | Full render | Stopped after |
+   |---|---:|---:|
+   | 60,000 small paths (engine test) | 530 ms | 0.2 ms |
+   | Huge-mask PDF, final quality | 765 ms | 9–35 ms |
+
+   | Huge-mask PDF, Linux software GPU | Before | After |
+   |---|---:|---:|
+   | Fast spins: tiles rendered to the end | 74 | 59 (31 stopped part way) |
+   | Fast spins: last notch to sharp, slowest | 168 ms | 134 ms |
+   | Wheel notches: notch to sharp, slowest | 888 ms | 696 ms |
+
+   Text and vector tiles take 1–10 ms, so they finish before anything can cancel them: for
+   ordinary PDFs this changes nothing, including the memory taken on fast spins.
+8. **The idle test itself was wrong at first.** It started while tiles around the view were
    still being prefetched, which is real work, and on Windows it counted the frame the test
    draws to end the phase (19 samples of 0% and one of 213% under software rendering). The
    idle window now excludes both; the app itself uses 0% CPU when idle on Linux and Windows.

@@ -10,7 +10,7 @@ use pdfium_render::prelude::*;
 
 use crate::geometry::{self, PageSize, TILE_SIZE, TileRect};
 use crate::queue::TileQueue;
-use crate::{DocId, DocInfo, EngineError, Quality, Tile, TileKey, TileRequest, TileResult};
+use crate::{DocId, DocInfo, EngineError, Quality, Tile, TileRequest, TileResult};
 
 pub struct EngineConfig {
     /// Folder containing the PDFium library. `None` uses [`crate::locate_pdfium`].
@@ -38,6 +38,10 @@ enum Command {
     Close(DocId),
     Tile(TileRequest),
     SetGeneration(u64),
+    Wanted {
+        generation: u64,
+        requests: Vec<TileRequest>,
+    },
     Shutdown,
 }
 
@@ -97,6 +101,7 @@ impl Engine {
                     next_doc: 1,
                     page_cache,
                     bitmap: None,
+                    deferred: Vec::new(),
                 }
                 .run();
             })?;
@@ -140,6 +145,20 @@ impl Engine {
         let _ = self.send(Command::SetGeneration(generation));
     }
 
+    /// Replaces the set of wanted tiles: starts `generation`, dropping queued tiles of older
+    /// generations, and queues `requests` (their own `generation` is ignored).
+    ///
+    /// Unlike [`Engine::set_generation`] followed by [`Engine::request_tile`], the engine sees
+    /// the whole set at once, so it can also abandon a tile it is rendering right now when
+    /// the new set no longer contains it (for example a zoom step the user has already
+    /// zoomed past). A tile abandoned this way produces no result.
+    pub fn set_wanted(&self, generation: u64, requests: Vec<TileRequest>) {
+        let _ = self.send(Command::Wanted {
+            generation,
+            requests,
+        });
+    }
+
     pub fn results(&self) -> &Receiver<TileResult> {
         &self.results
     }
@@ -172,6 +191,9 @@ struct Worker<'p> {
     page_cache: usize,
     /// Reused for every tile so rendering does not allocate a new 1 MB buffer each time.
     bitmap: Option<PdfBitmap<'p>>,
+    /// Commands that arrived during a render and must wait until it is over (they may
+    /// close the document being rendered).
+    deferred: Vec<Command>,
 }
 
 struct OpenDoc<'p> {
@@ -203,8 +225,14 @@ impl<'p> Worker<'p> {
                     return;
                 }
             }
-            if let Some(request) = self.queue.pop(self.generation) {
-                let tile = self.render(&request.key, request.quality);
+            if let Some(mut request) = self.queue.pop(self.generation) {
+                let tile = match self.render(&mut request) {
+                    Ok(Some(tile)) => Ok(tile),
+                    Ok(None) => Err(EngineError::Cancelled),
+                    Err(e) => Err(e),
+                };
+                // A cancelled tile is reported too, so callers waiting for every tile they
+                // asked for are not left hanging; nobody is waiting for its pixels.
                 let result = TileResult {
                     key: request.key,
                     generation: request.generation,
@@ -214,6 +242,11 @@ impl<'p> Worker<'p> {
                     return;
                 }
                 (self.waker)();
+                for command in std::mem::take(&mut self.deferred) {
+                    if !self.handle(command) {
+                        return;
+                    }
+                }
             }
         }
     }
@@ -241,6 +274,10 @@ impl<'p> Worker<'p> {
                 self.generation = self.generation.max(generation);
                 self.queue.drop_older_than(self.generation);
             }
+            Command::Wanted {
+                generation,
+                requests,
+            } => apply_wanted(&mut self.queue, &mut self.generation, generation, requests),
             Command::Shutdown => return false,
         }
         true
@@ -278,12 +315,23 @@ impl<'p> Worker<'p> {
         })
     }
 
-    fn render(&mut self, key: &TileKey, quality: Quality) -> Result<Tile, EngineError> {
+    /// Renders the tile, or returns `None` if it was abandoned because nobody wants it any
+    /// more. While rendering, newly arrived requests are queued; if one asks for this same
+    /// tile again, it is folded into `request` instead of rendering the tile twice.
+    fn render(&mut self, request: &mut TileRequest) -> Result<Option<Tile>, EngineError> {
         let started = Instant::now();
-        let doc = self
-            .docs
-            .get_mut(&key.doc)
-            .ok_or(EngineError::UnknownDocument)?;
+        let Worker {
+            docs,
+            bitmap,
+            commands,
+            queue,
+            generation,
+            deferred,
+            page_cache,
+            ..
+        } = self;
+        let key = request.key;
+        let doc = docs.get_mut(&key.doc).ok_or(EngineError::UnknownDocument)?;
         let size = *doc
             .sizes
             .get(key.page as usize)
@@ -292,15 +340,16 @@ impl<'p> Worker<'p> {
         let rect =
             geometry::tile_rect(page_px, key.tx, key.ty).ok_or(EngineError::TileOutOfRange)?;
         let known_images = doc.has_images.get(&key.page).copied();
-        let page = doc.page(key.page, self.page_cache)?;
+        let page = doc.page(key.page, *page_cache)?;
         let has_images = known_images.unwrap_or_else(|| page_has_images(page));
+        let quality = request.quality;
         let draft = match quality {
             Quality::Preview => true,
             Quality::Final => false,
             Quality::Sharp => has_images,
         };
 
-        let bitmap = match &mut self.bitmap {
+        let bitmap = match bitmap {
             Some(bitmap) => bitmap,
             empty => empty.insert(PdfBitmap::empty(
                 TILE_SIZE as Pixels,
@@ -308,16 +357,77 @@ impl<'p> Worker<'p> {
                 PdfBitmapFormat::BGRA,
             )?),
         };
-        let rgba = render_tile(page, page_px, rect, bitmap, !draft)?;
+        // Called by PDFium every so often while it renders. Cheap unless a command arrived.
+        let mut cancel = || {
+            let mut still_wanted = true;
+            while let Ok(command) = commands.try_recv() {
+                match command {
+                    Command::Tile(r) if r.generation >= *generation => queue.push(r),
+                    Command::Tile(_) => {}
+                    Command::SetGeneration(g) => {
+                        *generation = (*generation).max(g);
+                        queue.drop_older_than(*generation);
+                    }
+                    Command::Wanted {
+                        generation: g,
+                        requests,
+                    } => {
+                        let wanted = requests.iter().any(|r| r.key == key);
+                        apply_wanted(queue, generation, g, requests);
+                        if g >= *generation {
+                            still_wanted = wanted;
+                        }
+                    }
+                    Command::Close(doc) if doc == key.doc => {
+                        still_wanted = false;
+                        deferred.push(command);
+                    }
+                    Command::Shutdown => {
+                        still_wanted = false;
+                        deferred.push(command);
+                    }
+                    other => deferred.push(other),
+                }
+            }
+            if let Some(again) = queue.take_if(&key, |r| r.quality == quality) {
+                request.generation = again.generation;
+                request.priority = again.priority;
+            }
+            !still_wanted
+        };
+        let rgba = render_tile(page, page_px, rect, bitmap, !draft, &mut cancel)?;
         doc.has_images.insert(key.page, has_images);
-        Ok(Tile {
+        let Some(rgba) = rgba else {
+            return Ok(None);
+        };
+        Ok(Some(Tile {
             width: rect.width,
             height: rect.height,
             rgba,
             render_time: started.elapsed(),
             // A preview is not refined, so it is not reported as a draft.
             draft: draft && quality == Quality::Sharp,
-        })
+        }))
+    }
+}
+
+/// Starts `generation` and queues its tiles.
+fn apply_wanted(
+    queue: &mut TileQueue,
+    current: &mut u64,
+    generation: u64,
+    requests: Vec<TileRequest>,
+) {
+    if generation < *current {
+        return;
+    }
+    *current = generation;
+    queue.drop_older_than(generation);
+    for request in requests {
+        queue.push(TileRequest {
+            generation,
+            ..request
+        });
     }
 }
 
@@ -348,7 +458,8 @@ fn render_tile(
     rect: TileRect,
     bitmap: &mut PdfBitmap,
     smooth_images: bool,
-) -> Result<Vec<u8>, EngineError> {
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<Option<Vec<u8>>, EngineError> {
     let config = PdfRenderConfig::new()
         .set_image_smoothing(smooth_images)
         .set_fixed_size(page_px.0 as Pixels, page_px.1 as Pixels)
@@ -358,7 +469,9 @@ fn render_tile(
         .set_clear_color(PdfColor::WHITE)
         // PDFium writes BGRA by default; this makes it write RGBA so nobody has to swap bytes.
         .set_reverse_byte_order(true);
-    page.render_into_bitmap_with_config(bitmap, &config)?;
+    if !page.render_into_bitmap_cancellable(bitmap, &config, cancel)? {
+        return Ok(None);
+    }
 
     let raw = bitmap.as_raw_bytes();
     let stride = raw.len() / TILE_SIZE as usize;
@@ -367,7 +480,7 @@ fn render_tile(
     for row in raw.chunks_exact(stride).take(rect.height as usize) {
         rgba.extend_from_slice(&row[..row_bytes]);
     }
-    Ok(rgba)
+    Ok(Some(rgba))
 }
 
 /// Whether the page draws any image, including images inside form XObjects.

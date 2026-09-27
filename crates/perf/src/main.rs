@@ -539,6 +539,11 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
             "tiles",
         );
         ctx.add(
+            &format!("app.{scenario}.tiles_cancelled"),
+            tiles["cancelled"].as_f64().unwrap_or(0.0),
+            "tiles",
+        );
+        ctx.add(
             &format!("app.{scenario}.tile_cache_peak_mb"),
             tiles["peak_cache_mb"].as_f64().unwrap_or(0.0),
             "MB",
