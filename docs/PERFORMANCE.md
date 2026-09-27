@@ -55,7 +55,7 @@ outside every 250 ms, and reads the frame timing the app writes at the end.
 
 | Scenario | What happens | Main checks |
 |---|---|---|
-| `startup` | Open the 500-page PDF | Time from process start to the first sharp page; memory |
+| `startup` | Open the 500-page PDF, 4 times | Time from process start to the first sharp page (first run cold, median of the others), split into steps; memory |
 | `scroll` | 8 s scrolling at 2400 screen points/s | Missed frames, UI CPU per frame |
 | `zoom` | 100% → 800% → 50% with pauses | Missed frames, memory |
 | `idle` | Wait for prefetching to finish, then 6 s of nothing | CPU use and frames drawn (must be ~0) |

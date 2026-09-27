@@ -88,6 +88,8 @@ impl ViewerApp {
         let engine = Engine::start_with_waker(config, move || ctx.request_repaint())
             .map(Arc::new)
             .map_err(|e| e.to_string());
+        #[cfg(feature = "automation")]
+        crate::automation::mark("pdfium_engine");
         let mut app = ViewerApp {
             message: engine.as_ref().err().cloned(),
             engine,

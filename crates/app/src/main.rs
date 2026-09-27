@@ -13,7 +13,7 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     #[cfg(feature = "automation")]
-    automation::mark_main_started();
+    automation::mark("main");
     let path = std::env::args_os().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -33,6 +33,11 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Kraken PDF",
         options,
-        Box::new(|cc| Ok(Box::new(app::ViewerApp::new(cc, path)))),
+        Box::new(|cc| {
+            // eframe has created the window, the GPU device and the fonts by now.
+            #[cfg(feature = "automation")]
+            automation::mark("window_and_gpu");
+            Ok(Box::new(app::ViewerApp::new(cc, path)))
+        }),
     )
 }

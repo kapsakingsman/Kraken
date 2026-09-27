@@ -238,6 +238,99 @@ struct Sample {
     rss_mb: f64,
 }
 
+/// Starts the app for one scenario and waits for it to finish. Returns when it was
+/// started, its report, and the CPU/memory samples taken meanwhile.
+fn run_app(
+    app: &Path,
+    scenario: &str,
+    fixtures: &Fixtures,
+    report_path: &Path,
+) -> Result<(f64, Value, Vec<Sample>)> {
+    let _ = std::fs::remove_file(report_path);
+    let spawned_unix_ms = unix_ms();
+    let child = Command::new(app)
+        .arg(&fixtures.text)
+        .env("KRAKEN_AUTOMATION", scenario)
+        .env("KRAKEN_PERF_REPORT", report_path)
+        .spawn()
+        .with_context(|| format!("starting {}", app.display()))?;
+    let samples = sample_until_exit(child)?;
+
+    let text = std::fs::read_to_string(report_path)
+        .context("the app exited without writing its report")?;
+    let report: Value = serde_json::from_str(&text)?;
+    if report["ok"] != Value::Bool(true) {
+        bail!("{}", report["failure"]);
+    }
+    Ok((spawned_unix_ms, report, samples))
+}
+
+/// How many times the startup scenario runs. The first run is "cold": a freshly built
+/// program is scanned by antivirus software and its files are not in the disk cache yet.
+/// The later runs show what users see on every start after the first.
+const STARTUP_RUNS: usize = 4;
+
+/// Runs the startup scenario several times and reports where the time goes: the steps
+/// between the moments the app marks (process start -> main -> window and GPU -> ...).
+fn startup_scenario(app: &Path, fixtures: &Fixtures, out: &Path, ctx: &mut Ctx) -> Result<()> {
+    let mut totals = Vec::new();
+    let mut steps: Vec<(String, Vec<f64>)> = Vec::new();
+    let mut frames = Vec::new();
+    let mut rss = Vec::new();
+    for run in 0..STARTUP_RUNS {
+        let path = out.join(format!("app-startup-{}.json", run + 1));
+        let (spawned, report, samples) = run_app(app, "startup", fixtures, &path)?;
+        rss.extend(samples.iter().map(|s| s.rss_mb));
+        let first_page = report["first_page_unix_ms"].as_f64().unwrap_or(f64::NAN);
+        totals.push(first_page - spawned);
+        if run == 0 {
+            continue; // the cold run only counts as a total
+        }
+        frames.push(
+            report["startup"]["frames_to_first_page"]
+                .as_f64()
+                .unwrap_or(f64::NAN),
+        );
+        let mut previous = spawned;
+        for mark in report["startup"]["marks"].as_array().into_iter().flatten() {
+            let name = mark["name"].as_str().unwrap_or("?").to_owned();
+            let at = mark["unix_ms"].as_f64().unwrap_or(f64::NAN);
+            match steps.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, values)) => values.push(at - previous),
+                None => steps.push((name, vec![at - previous])),
+            }
+            previous = at;
+        }
+    }
+    let warm = &totals[1..];
+    ctx.add("app.startup.cold_first_page_ms", totals[0], "ms");
+    ctx.add("app.startup.first_page_ms", percentile(warm, 0.5), "ms");
+    for (i, (name, values)) in steps.iter().enumerate() {
+        // Named after the moment each step ends; numbered so they sort in order.
+        ctx.add(
+            &format!("app.startup.step{}_until_{name}_ms", i + 1),
+            percentile(values, 0.5),
+            "ms",
+        );
+    }
+    ctx.add(
+        "app.startup.frames_to_first_page",
+        percentile(&frames, 0.5),
+        "frames",
+    );
+    ctx.add("app.startup.peak_rss_mb", max(&rss), "MB");
+    ctx.report.notes.push(format!(
+        "Startup runs to first sharp page (ms), the first one cold: {}. Steps are medians of \
+         the warm runs.",
+        totals
+            .iter()
+            .map(|t| format!("{t:.0}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    Ok(())
+}
+
 fn app_scenario(
     app: &Path,
     scenario: &str,
@@ -246,58 +339,13 @@ fn app_scenario(
     ctx: &mut Ctx,
 ) -> Result<()> {
     std::fs::create_dir_all(out)?;
-    let report_path = out.join(format!("app-{scenario}.json"));
-    let _ = std::fs::remove_file(&report_path);
-
-    let spawned_unix_ms = unix_ms();
-    let child = Command::new(app)
-        .arg(&fixtures.text)
-        .env("KRAKEN_AUTOMATION", scenario)
-        .env("KRAKEN_PERF_REPORT", &report_path)
-        .spawn()
-        .with_context(|| format!("starting {}", app.display()))?;
-    let samples = sample_until_exit(child)?;
-
-    let text = std::fs::read_to_string(&report_path)
-        .context("the app exited without writing its report")?;
-    let report: Value = serde_json::from_str(&text)?;
-    if report["ok"] != Value::Bool(true) {
-        bail!("{}", report["failure"]);
+    if scenario == "startup" {
+        return startup_scenario(app, fixtures, out, ctx);
     }
+    let report_path = out.join(format!("app-{scenario}.json"));
+    let (_, report, samples) = run_app(app, scenario, fixtures, &report_path)?;
     let rss: Vec<f64> = samples.iter().map(|s| s.rss_mb).collect();
     let mut soak_peaks = Vec::new();
-
-    if scenario == "startup" {
-        let first_page = report["first_page_unix_ms"].as_f64().unwrap_or(f64::NAN);
-        ctx.add(
-            "app.startup.first_page_ms",
-            first_page - spawned_unix_ms,
-            "ms",
-        );
-        // Where the startup time goes.
-        let step = |key: &str| report["startup"][key].as_f64().unwrap_or(f64::NAN);
-        let main = step("main_unix_ms");
-        let window = step("window_ready_unix_ms");
-        let opened = step("opened_unix_ms");
-        ctx.add(
-            "app.startup.1_process_to_main_ms",
-            main - spawned_unix_ms,
-            "ms",
-        );
-        ctx.add("app.startup.2_main_to_window_ms", window - main, "ms");
-        ctx.add("app.startup.3_window_to_opened_ms", opened - window, "ms");
-        ctx.add(
-            "app.startup.4_opened_to_first_page_ms",
-            first_page - opened,
-            "ms",
-        );
-        ctx.add(
-            "app.startup.frames_to_first_page",
-            step("frames_to_first_page"),
-            "frames",
-        );
-        ctx.add("app.startup.peak_rss_mb", max(&rss), "MB");
-    }
 
     for phase in report["phases"].as_array().into_iter().flatten() {
         let name = phase["name"].as_str().unwrap_or("?");
