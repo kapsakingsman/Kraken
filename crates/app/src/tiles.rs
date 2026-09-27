@@ -30,6 +30,8 @@ pub struct TileManager {
     ready: VecDeque<TileResult>,
     ready_keys: HashSet<TileKey>,
     failed: HashSet<TileKey>,
+    /// Tiles requested before the view asked for them (see [`TileManager::expect`]).
+    expected: HashSet<TileKey>,
     wanted: Vec<TileRequest>,
     last_wanted: Vec<TileKey>,
     generation: u64,
@@ -69,6 +71,7 @@ impl TileManager {
             ready: VecDeque::new(),
             ready_keys: HashSet::new(),
             failed: HashSet::new(),
+            expected: HashSet::new(),
             wanted: Vec::new(),
             last_wanted: Vec::new(),
             generation: 0,
@@ -109,9 +112,10 @@ impl TileManager {
         // would only cost upload time and memory.
         let before = self.ready.len();
         let wanted = &self.last_wanted;
+        let expected = &mut self.expected;
         let ready_keys = &mut self.ready_keys;
         self.ready.retain(|r| {
-            let keep = wanted.binary_search(&r.key).is_ok();
+            let keep = wanted.binary_search(&r.key).is_ok() || expected.remove(&r.key);
             if !keep {
                 ready_keys.remove(&r.key);
             }
@@ -179,6 +183,12 @@ impl TileManager {
         cached.map(|(texture, _)| texture)
     }
 
+    /// Keeps the results for these tiles although the view has not asked for them yet:
+    /// they were requested ahead, while the window was still being created.
+    pub fn expect(&mut self, keys: Vec<TileKey>) {
+        self.expected.extend(keys);
+    }
+
     /// Returns the tile's texture if it is already cached, without requesting it.
     pub fn peek(&mut self, key: TileKey) -> Option<TextureHandle> {
         self.cache.get(&key).map(|(texture, _)| texture.clone())
@@ -218,6 +228,7 @@ impl TileManager {
         self.ready.clear();
         self.ready_keys.clear();
         self.failed.clear();
+        self.expected.clear();
         self.last_wanted.clear();
     }
 

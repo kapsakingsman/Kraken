@@ -2,21 +2,20 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::thread;
 
-use crossbeam_channel::{Receiver, TryRecvError, bounded};
+use crossbeam_channel::{Receiver, TryRecvError};
 use eframe::egui::{
     self, Align, Align2, Color32, Event, FontId, Key, Layout, Modifiers, MouseWheelUnit, Painter,
     Rect, RichText, Sense, Vec2, pos2, vec2,
 };
 use pdf_engine::geometry::{page_px_size, tile_rect};
-use pdf_engine::{
-    DocId, DocInfo, Engine, EngineConfig, PageSize, Quality, Scale, TILE_SIZE, TileKey,
-};
+use pdf_engine::{DocId, Engine, PageSize, Quality, Scale, TILE_SIZE, TileKey};
 use pdf_view::camera::{fit_page_zoom, fit_width_zoom, step_zoom, wheel_notches};
 use pdf_view::{AutoScroll, Camera, DocLayout, SmoothScroll, ZoomSettle, visible_tiles};
 
 use crate::hud::{Hud, HudAction};
+use crate::settings;
+use crate::startup::{Boot, OpenResult, Opened, START_ZOOM, open_in_background};
 use crate::tiles::{TileManager, preview_px_per_pt};
 
 /// Screen points scrolled per mouse-wheel notch.
@@ -37,8 +36,6 @@ struct Document {
     id: Option<DocId>,
     layout: DocLayout,
 }
-
-type OpenResult = Result<(PathBuf, DocInfo), String>;
 
 /// Zoom modes that follow the window size until the user zooms by hand.
 #[derive(Clone, Copy, PartialEq)]
@@ -72,32 +69,32 @@ pub struct ViewerApp {
     auto_scroll: Option<AutoScroll>,
     opening: Option<Receiver<OpenResult>>,
     message: Option<String>,
+    /// The display scale remembered for the next start (see `settings`).
+    saved_display_scale: Option<f32>,
     #[cfg(feature = "automation")]
     automation: Option<crate::automation::Automation>,
 }
 
 impl ViewerApp {
-    pub fn new(cc: &eframe::CreationContext, path: Option<PathBuf>, gpu: String) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext,
+        boot: Boot,
+        gpu: String,
+        saved_display_scale: Option<f32>,
+    ) -> Self {
         // Ctrl+plus/minus zoom the document, not egui's own UI scale.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        let ctx = cc.egui_ctx.clone();
-        let config = EngineConfig {
-            // Enough parsed pages for everything on screen plus the pages prefetched around it.
-            page_cache: 16,
-            ..EngineConfig::default()
+        let message = match (&boot.engine, &boot.opening) {
+            (Err(e), _) => Some(e.clone()),
+            (Ok(_), Some(_)) => Some("Opening...".into()),
+            (Ok(_), None) => None,
         };
-        // Every finished tile wakes the UI, so it appears without waiting for input.
-        let engine = Engine::start_with_waker(config, move || ctx.request_repaint())
-            .map(Arc::new)
-            .map_err(|e| e.to_string());
-        #[cfg(feature = "automation")]
-        crate::automation::mark("pdfium_engine");
-        let mut app = ViewerApp {
-            message: engine.as_ref().err().cloned(),
-            engine,
+        ViewerApp {
+            message,
+            engine: boot.engine,
             document: demo_document(),
             camera: Camera::default(),
-            settle: ZoomSettle::new(100.0),
+            settle: ZoomSettle::new(START_ZOOM),
             fit: None,
             zoom_command: None,
             fallback_scale: None,
@@ -107,14 +104,11 @@ impl ViewerApp {
             hud: Hud::new(gpu.clone()),
             tiles: TileManager::new(),
             auto_scroll: None,
-            opening: None,
+            opening: boot.opening,
+            saved_display_scale,
             #[cfg(feature = "automation")]
             automation: crate::automation::Automation::from_env(gpu),
-        };
-        if let Some(path) = path {
-            app.open(path, &cc.egui_ctx);
         }
-        app
     }
 
     /// Opens a PDF on a background thread so a large file cannot freeze the window.
@@ -126,24 +120,10 @@ impl ViewerApp {
                 return;
             }
         };
-        let (tx, rx) = bounded(1);
         let ctx = ctx.clone();
-        thread::spawn(move || {
-            match engine.open(&path, None) {
-                Ok(info) => {
-                    let id = info.id;
-                    // Nobody is waiting any more (another file was opened meanwhile).
-                    if tx.send(Ok((path, info))).is_err() {
-                        engine.close(id);
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(format!("{}: {e}", path.display())));
-                }
-            }
+        self.opening = Some(open_in_background(engine, path, None, move || {
             ctx.request_repaint();
-        });
-        self.opening = Some(rx);
+        }));
         self.message = Some("Opening...".into());
     }
 
@@ -156,7 +136,11 @@ impl ViewerApp {
         };
         self.opening = None;
         match result {
-            Ok((path, info)) => {
+            Ok(Opened {
+                path,
+                info,
+                rendered_ahead,
+            }) => {
                 if let (Ok(engine), Some(old)) = (&self.engine, self.document.id) {
                     engine.close(old);
                 }
@@ -166,6 +150,7 @@ impl ViewerApp {
                 );
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{name} - Kraken PDF")));
                 self.tiles.clear();
+                self.tiles.expect(rendered_ahead);
                 self.fallback_scale = None;
                 self.document = Document {
                     name,
@@ -622,6 +607,11 @@ impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.hud.begin_frame(frame.info().cpu_usage);
         let ctx = ui.ctx().clone();
+        let ppp = ctx.pixels_per_point();
+        if self.saved_display_scale != Some(ppp) {
+            settings::save_display_scale(ppp);
+            self.saved_display_scale = Some(ppp);
+        }
         self.receive_opened(&ctx);
         if let Ok(engine) = &self.engine {
             self.tiles.begin_frame(engine, &ctx);

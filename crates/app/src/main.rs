@@ -5,9 +5,12 @@ mod app;
 #[cfg(feature = "automation")]
 mod automation;
 mod hud;
+mod settings;
+mod startup;
 mod tiles;
 
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use eframe::egui;
 
@@ -15,6 +18,10 @@ fn main() -> eframe::Result {
     #[cfg(feature = "automation")]
     automation::mark("main");
     let path = std::env::args_os().nth(1).map(PathBuf::from);
+    // PDFium starts and renders the first page while the window and GPU are set up.
+    let display_scale = settings::load_display_scale();
+    let repaint = Arc::new(OnceLock::new());
+    let boot = startup::begin(path, display_scale, Arc::clone(&repaint));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Kraken PDF")
@@ -38,8 +45,13 @@ fn main() -> eframe::Result {
             // eframe has created the window, the GPU device and the fonts by now.
             #[cfg(feature = "automation")]
             automation::mark("window_and_gpu");
+            let _ = repaint.set(cc.egui_ctx.clone());
+            let boot = boot.join().unwrap_or_else(|_| startup::Boot {
+                engine: Err("starting PDFium failed".into()),
+                opening: None,
+            });
             let gpu = gpu_description(cc);
-            Ok(Box::new(app::ViewerApp::new(cc, path, gpu)))
+            Ok(Box::new(app::ViewerApp::new(cc, boot, gpu, display_scale)))
         }),
     )
 }

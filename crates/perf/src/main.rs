@@ -75,6 +75,7 @@ enum Gpu {
 
 const APP_TIMEOUT: Duration = Duration::from_secs(300);
 const SAMPLE_EVERY: Duration = Duration::from_millis(250);
+const MEMORY_EVERY: Duration = Duration::from_millis(10);
 /// Idle CPU is measured after this grace period: the frame that ends the previous activity
 /// is still being drawn when the idle phase starts.
 const IDLE_GRACE_MS: f64 = 1000.0;
@@ -604,30 +605,53 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
     Ok(())
 }
 
-/// Samples the child's CPU and memory until it exits.
+/// Samples the child's CPU and memory until it exits. CPU use is averaged over
+/// [`SAMPLE_EVERY`]; memory is read every [`MEMORY_EVERY`] and each sample keeps the peak
+/// of its interval, so a short run (a fast startup) still has its peak recorded.
 fn sample_until_exit(mut child: Child) -> Result<Vec<Sample>> {
     let pid = Pid::from_u32(child.id());
     let mut system = System::new();
-    let refresh = ProcessRefreshKind::nothing().with_cpu().with_memory();
+    let full = ProcessRefreshKind::nothing().with_cpu().with_memory();
+    let memory_only = ProcessRefreshKind::nothing().with_memory();
     let started = Instant::now();
+    let mut next_sample = started + SAMPLE_EVERY;
+    let mut peak_mb = 0.0f64;
     let mut samples = Vec::new();
     loop {
         if child.try_wait()?.is_some() {
+            if peak_mb > 0.0 {
+                // The last, partial interval: its memory peak counts, its CPU is unknown.
+                samples.push(Sample {
+                    unix_ms: unix_ms(),
+                    cpu_pct: 0.0,
+                    rss_mb: peak_mb,
+                });
+            }
             return Ok(samples);
         }
         if started.elapsed() > APP_TIMEOUT {
             let _ = child.kill();
             bail!("timed out after {} s", APP_TIMEOUT.as_secs());
         }
-        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, refresh);
+        let now = Instant::now();
+        let full_sample = now >= next_sample;
+        let kind = if full_sample { full } else { memory_only };
+        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, kind);
         if let Some(process) = system.process(pid) {
-            samples.push(Sample {
-                unix_ms: unix_ms(),
-                cpu_pct: process.cpu_usage() as f64,
-                rss_mb: process.memory() as f64 / (1024.0 * 1024.0),
-            });
+            peak_mb = peak_mb.max(process.memory() as f64 / (1024.0 * 1024.0));
+            if full_sample {
+                samples.push(Sample {
+                    unix_ms: unix_ms(),
+                    cpu_pct: process.cpu_usage() as f64,
+                    rss_mb: peak_mb,
+                });
+                peak_mb = 0.0;
+            }
         }
-        std::thread::sleep(SAMPLE_EVERY);
+        if full_sample {
+            next_sample += SAMPLE_EVERY;
+        }
+        std::thread::sleep(MEMORY_EVERY);
     }
 }
 
