@@ -25,13 +25,16 @@ page_max_ms = { max = 1500 }
 first_page_ms = { max = 3000 }
 peak_rss_mb = { max = 400 }
 
+# Frame timing is judged against the monitor's own refresh rate (the app draws with vsync):
+# a 99th-percentile frame may take at most 1.5 normal frames, at 60, 75 or 144 Hz alike.
 [app.scroll]
 peak_rss_mb = { max = 500 }
 missed_frames_pct = { max = 1.0, real_gpu_only = true }
 ui_cpu_p99_ms = { max = 3.0, real_gpu_only = true }
-frame_p99_ms = { max = 10.4, real_gpu_only = true }  # 1.5 frames at 144 Hz
+frame_p99_vs_normal = { max = 1.5, real_gpu_only = true }
 
 [app.zoom]
+frame_p99_vs_normal = { max = 1.5, real_gpu_only = true }
 # Zooming 100% -> 800% -> 50%. Was 918 MB before stale tiles were dropped and tile
 # requests paused during the gesture; 172 MB after.
 peak_rss_mb = { max = 400 }

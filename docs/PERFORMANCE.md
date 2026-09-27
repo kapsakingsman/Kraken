@@ -87,6 +87,24 @@ Per-frame viewer work (criterion): finding the visible pages of a 10,000-page do
 35 ns and a tile cache frame at full budget 10 µs, against a frame budget of 6,900 µs at
 144 Hz.
 
+### Development PC (Windows 11, real GPU, monitor at 75 Hz)
+
+| Metric | Result |
+|---|---:|
+| First sharp page, warm / cold | 381 ms / 620 ms |
+| Scroll: missed frames | 0.34% |
+| Scroll: slowest 1% of frames vs a normal frame | 1.08× |
+| Scroll: UI CPU per frame, p99 | 1.35 ms |
+| Scroll: whole process CPU | 6% of a core |
+| Zoom: missed frames / UI CPU p99 | 0.45% / 1.97 ms |
+| Idle CPU | 0% |
+| Peak memory (scroll, zoom, 500-page tour) | 200 / 199 / 219 MB |
+| Memory growth over 5 zoom sweeps | 1.2 MB |
+
+The frame budget was first a fixed 10.4 ms (1.5 frames at 144 Hz), which failed on this
+monitor running at 75 Hz, where a normal frame takes 13.3 ms. Frame timing is now judged
+against the monitor's own refresh rate.
+
 ### Startup breakdown
 
 The first sharp page takes 0.2 s on the Linux container but 1.7 s on the Windows CI

@@ -387,8 +387,17 @@ fn app_scenario(
 
         match name {
             "scroll" | "zoom" => {
+                // With vsync the app draws at the monitor's refresh rate, so frame times are
+                // judged against the display's own frame time, not a fixed number.
+                let normal_frame = percentile(&intervals, 0.5);
+                ctx.add(&key("display_hz"), 1000.0 / normal_frame.max(1e-9), "Hz");
                 ctx.add(&key("fps"), 1000.0 / mean(&intervals).max(1e-9), "fps");
                 ctx.add(&key("frame_p99_ms"), percentile(&intervals, 0.99), "ms");
+                ctx.add(
+                    &key("frame_p99_vs_normal"),
+                    percentile(&intervals, 0.99) / normal_frame.max(1e-9),
+                    "x",
+                );
                 ctx.add(
                     &key("missed_frames_pct"),
                     missed_frames_pct(&intervals),
