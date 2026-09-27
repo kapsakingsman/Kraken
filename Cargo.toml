@@ -1,13 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/engine", "crates/cli", "crates/view", "crates/app", "crates/perf"]
-exclude = ["third_party"]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.95"
-
-# pdfium-render 0.9.4 with one addition: cancellable (progressive) page rendering, so the
-# engine can abandon a slow render nobody is waiting for. See third_party/README.md.
-[patch.crates-io]
-pdfium-render = { path = "third_party/pdfium-render" }

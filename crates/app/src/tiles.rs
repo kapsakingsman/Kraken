@@ -4,7 +4,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
-use pdf_engine::{Engine, EngineError, Quality, TILE_SIZE, Tile, TileKey, TileRequest, TileResult};
+use pdf_engine::{Engine, Quality, TILE_SIZE, Tile, TileKey, TileRequest, TileResult};
 use pdf_view::TileCache;
 
 /// GPU memory for page tiles. A 512×512 tile takes 1 MB.
@@ -49,8 +49,6 @@ pub struct TileStats {
     pub peak_ready_bytes: usize,
     /// Finished tiles thrown away because the view had moved on.
     pub discarded: u64,
-    /// Tiles the engine stopped rendering part way because the view had moved on.
-    pub cancelled: u64,
 }
 
 /// How many recent render times [`TileStats`] keeps.
@@ -74,10 +72,6 @@ impl TileManager {
     pub fn begin_frame(&mut self, engine: &Engine, ctx: &egui::Context) {
         self.cache.begin_frame();
         for result in engine.results().try_iter() {
-            if matches!(result.tile, Err(EngineError::Cancelled)) {
-                self.stats.cancelled += 1;
-                continue;
-            }
             if let Ok(tile) = &result.tile {
                 self.stats.rendered += 1;
                 if self.stats.render_ms.len() == RENDER_TIMES_KEPT {
@@ -170,8 +164,7 @@ impl TileManager {
     }
 
     /// Sends this frame's requests. When the set of wanted tiles changed (the view
-    /// scrolled or zoomed), the engine drops queued tiles nobody is waiting for any more,
-    /// and stops rendering one that is no longer wanted.
+    /// scrolled), the engine drops queued tiles nobody is waiting for any more.
     pub fn end_frame(&mut self, engine: &Engine) {
         let mut keys: Vec<TileKey> = self.wanted.iter().map(|r| r.key).collect();
         keys.sort();
@@ -179,7 +172,13 @@ impl TileManager {
             return;
         }
         self.generation += 1;
-        engine.set_wanted(self.generation, self.wanted.clone());
+        engine.set_generation(self.generation);
+        for request in &self.wanted {
+            engine.request_tile(TileRequest {
+                generation: self.generation,
+                ..*request
+            });
+        }
         self.last_wanted = keys;
     }
 
