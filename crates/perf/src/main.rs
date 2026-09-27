@@ -325,6 +325,14 @@ fn app_scenario(
                 ctx.add(&key("peak_rss_mb"), max(&phase_rss), "MB");
             }
             "idle" => {
+                // Kept in the report so a failure shows whether CPU use was a spike or
+                // constant polling.
+                let list: Vec<String> = cpu.iter().map(|c| format!("{c:.1}")).collect();
+                ctx.report.notes.push(format!(
+                    "Idle CPU samples every {} ms (% of a core): {}",
+                    SAMPLE_EVERY.as_millis(),
+                    list.join(" ")
+                ));
                 ctx.add(&key("process_cpu_pct"), mean(&cpu), "% core");
                 ctx.add(&key("frames"), frames.len() as f64, "frames");
             }
