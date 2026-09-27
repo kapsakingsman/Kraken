@@ -23,6 +23,9 @@ pub struct Report {
     /// Problems that stopped a scenario from producing numbers.
     pub errors: Vec<String>,
     pub notes: Vec<String>,
+    /// Budgets are shown but not enforced: the run used the caller's own document, and
+    /// the budgets are set for the generated fixtures.
+    pub advisory: bool,
 }
 
 impl Report {
@@ -40,7 +43,10 @@ impl Report {
             value,
             unit,
             budget,
-            status: check(value, budget, real_gpu),
+            status: match check(value, budget, real_gpu) {
+                Status::Fail if self.advisory => Status::Over,
+                status => status,
+            },
         });
     }
 
@@ -70,6 +76,7 @@ impl Report {
                 Status::Pass => "pass",
                 Status::Fail => "**FAIL**",
                 Status::Info => "info (needs real GPU)",
+                Status::Over => "over (not enforced for --pdf)",
                 Status::None => "",
             };
             let _ = writeln!(
@@ -87,5 +94,27 @@ impl Report {
             }
         }
         md
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn over_budget_fails_unless_the_run_is_advisory() {
+        let budgets = Budgets::parse("[app.x]\nms = { max = 10 }\n").unwrap();
+        let mut report = Report::default();
+        report.add(&budgets, true, "app.x.ms", 20.0, "ms");
+        assert!(report.failed());
+
+        let mut advisory = Report {
+            advisory: true,
+            ..Report::default()
+        };
+        advisory.add(&budgets, true, "app.x.ms", 20.0, "ms");
+        assert_eq!(advisory.metrics[0].status, Status::Over);
+        assert!(!advisory.failed());
+        assert!(advisory.markdown().contains("over (not enforced"));
     }
 }

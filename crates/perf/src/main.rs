@@ -194,8 +194,11 @@ fn main() -> Result<()> {
         }
         let pdf = args.pdf.clone().unwrap_or_else(|| fixtures.text.clone());
         if args.pdf.is_some() {
+            // The budgets are set for the 500-page fixture: shown for comparison only.
+            ctx.report.advisory = true;
             ctx.report.notes.push(format!(
-                "App scenarios ran on {} instead of the 500-page fixture; budgets assume the fixture.",
+                "App scenarios ran on {} instead of the 500-page fixture; budgets are set for the \
+                 fixture, so they are shown but not enforced.",
                 pdf.display()
             ));
         }

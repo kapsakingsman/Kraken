@@ -73,6 +73,8 @@ pub enum Status {
     Info,
     /// No budget for this metric.
     None,
+    /// Over budget, but the run used a document the budgets were not made for.
+    Over,
 }
 
 pub fn check(value: f64, budget: Option<Budget>, real_gpu: bool) -> Status {
