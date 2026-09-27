@@ -114,7 +114,18 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
    as many when zooming out from 800%. Now tiles are only requested once the zoom has
    settled; during the gesture the existing tiles are stretched, as designed. For the zoom
    scenario this cut rendered tiles from 1730 to 69 and peak memory from 918 MB to 174 MB.
-3. **The idle test itself was wrong at first.** It started while tiles around the view were
+3. **Slow GPU setup on Windows.** By default wgpu sets up Vulkan, Direct3D 12 and OpenGL
+   and then picks one. On the development PC (warm starts, median of 3) that cost:
+
+   | | All backends | Direct3D 12 only |
+   |---|---:|---:|
+   | Window and GPU ready | 410 ms | 281 ms |
+   | First sharp page | 493 ms | 386 ms |
+   | Cold start, first sharp page | 718 ms | 462 ms |
+   | Peak memory | 209 MB | 172 MB |
+
+   The app now uses only Direct3D 12 on Windows (`WGPU_BACKEND` still overrides it).
+4. **The idle test itself was wrong at first.** It started while tiles around the view were
    still being prefetched, which is real work, and on Windows it counted the frame the test
    draws to end the phase (19 samples of 0% and one of 213% under software rendering). The
    idle window now excludes both; the app itself uses 0% CPU when idle on Linux and Windows.
