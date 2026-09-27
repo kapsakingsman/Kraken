@@ -18,6 +18,13 @@ use serde_json::json;
 
 use crate::tiles::TileStats;
 
+/// When `main` started, for the startup breakdown.
+static MAIN_STARTED_UNIX_MS: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+pub fn mark_main_started() {
+    let _ = MAIN_STARTED_UNIX_MS.set(unix_ms());
+}
+
 /// Waiting longer than this for the first page means the run failed.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -82,6 +89,10 @@ pub struct Automation {
     opened_ms: Option<f64>,
     first_page_ms: Option<f64>,
     first_page_unix_ms: Option<f64>,
+    created_unix_ms: f64,
+    opened_unix_ms: Option<f64>,
+    /// Frames drawn from opening the document to the first sharp page.
+    frames_to_first_page: u32,
     current: usize,
     phase_started: Option<Instant>,
     phase_log: Vec<serde_json::Value>,
@@ -117,6 +128,9 @@ impl Automation {
             opened_ms: None,
             first_page_ms: None,
             first_page_unix_ms: None,
+            created_unix_ms: unix_ms(),
+            opened_unix_ms: None,
+            frames_to_first_page: 0,
             current: 0,
             phase_started: None,
             phase_log: Vec::new(),
@@ -140,8 +154,12 @@ impl Automation {
         let now_ms = self.since_start_ms();
         if state.document_open && self.opened_ms.is_none() {
             self.opened_ms = Some(now_ms);
+            self.opened_unix_ms = Some(unix_ms());
         }
         if self.first_page_ms.is_none() {
+            if state.document_open {
+                self.frames_to_first_page += 1;
+            }
             if state.document_open && state.render_complete {
                 self.first_page_ms = Some(now_ms);
                 self.first_page_unix_ms = Some(unix_ms());
@@ -258,6 +276,13 @@ impl Automation {
             "open_ms": self.opened_ms,
             "first_page_ms": self.first_page_ms,
             "first_page_unix_ms": self.first_page_unix_ms,
+            "startup": {
+                "main_unix_ms": MAIN_STARTED_UNIX_MS.get(),
+                "window_ready_unix_ms": self.created_unix_ms,
+                "opened_unix_ms": self.opened_unix_ms,
+                "first_page_unix_ms": self.first_page_unix_ms,
+                "frames_to_first_page": self.frames_to_first_page,
+            },
             "phases": self.phase_log,
             "frames": self.frames,
             "tiles": {

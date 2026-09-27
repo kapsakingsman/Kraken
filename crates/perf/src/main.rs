@@ -274,6 +274,28 @@ fn app_scenario(
             first_page - spawned_unix_ms,
             "ms",
         );
+        // Where the startup time goes.
+        let step = |key: &str| report["startup"][key].as_f64().unwrap_or(f64::NAN);
+        let main = step("main_unix_ms");
+        let window = step("window_ready_unix_ms");
+        let opened = step("opened_unix_ms");
+        ctx.add(
+            "app.startup.1_process_to_main_ms",
+            main - spawned_unix_ms,
+            "ms",
+        );
+        ctx.add("app.startup.2_main_to_window_ms", window - main, "ms");
+        ctx.add("app.startup.3_window_to_opened_ms", opened - window, "ms");
+        ctx.add(
+            "app.startup.4_opened_to_first_page_ms",
+            first_page - opened,
+            "ms",
+        );
+        ctx.add(
+            "app.startup.frames_to_first_page",
+            step("frames_to_first_page"),
+            "frames",
+        );
         ctx.add("app.startup.peak_rss_mb", max(&rss), "MB");
     }
 
