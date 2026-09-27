@@ -16,8 +16,10 @@ pub const ZOOM_STEPS: [f32; 16] = [
     1200.0, 1600.0,
 ];
 
-/// How long the zoom must stay still before tiles are re-rendered at the new zoom.
-pub const SETTLE_SECONDS: f64 = 0.12;
+/// How long the zoom must stay still before tiles are re-rendered at the new zoom. Shorter
+/// makes the view sharp sooner after a gesture (120 -> 80 ms took perf-runner's sharpen
+/// scenario from 185 to 150 ms); too short re-renders during brief pauses in a pinch.
+pub const SETTLE_SECONDS: f64 = 0.08;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {

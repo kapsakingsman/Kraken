@@ -58,6 +58,7 @@ outside every 250 ms, and reads the frame timing the app writes at the end.
 | `startup` | Open the 500-page PDF, 4 times | Time from process start to the first sharp page (first run cold, median of the others), split into steps; memory |
 | `scroll` | 8 s scrolling at 2400 screen points/s | Missed frames, UI CPU per frame |
 | `zoom` | 100% → 800% → 50% with pauses | Missed frames, memory |
+| `sharpen` | Six 0.4 s zoom gestures to different zoom levels | Time from the end of the gesture until every visible tile is sharp |
 | `idle` | Wait for prefetching to finish, then 6 s of nothing | CPU use and frames drawn (must be ~0) |
 | `tour` | Scroll through all 500 pages | Tile cache stays at its budget; memory |
 | `soak` | The zoom sweep 5 times in one process | Memory must not keep growing (leaks) |
@@ -143,7 +144,16 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
    | Peak memory | 209 MB | 172 MB |
 
    The app now uses only Direct3D 12 on Windows (`WGPU_BACKEND` still overrides it).
-4. **The idle test itself was wrong at first.** It started while tiles around the view were
+4. **Blurry for too long after zooming.** Measured with the `sharpen` scenario (Linux,
+   software GPU, median of six gestures):
+
+   | Change | Zoom stop → sharp |
+   |---|---:|
+   | Before | 265 ms |
+   | Upload up to 12 MB of tiles per frame instead of 4 tiles | 185 ms |
+   | Wait 80 ms instead of 120 ms for the gesture to end | 150 ms |
+
+5. **The idle test itself was wrong at first.** It started while tiles around the view were
    still being prefetched, which is real work, and on Windows it counted the frame the test
    draws to end the phase (19 samples of 0% and one of 213% under software rendering). The
    idle window now excludes both; the app itself uses 0% CPU when idle on Linux and Windows.

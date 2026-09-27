@@ -41,6 +41,12 @@ peak_rss_mb = { max = 400 }
 missed_frames_pct = { max = 1.0, real_gpu_only = true }
 ui_cpu_p99_ms = { max = 3.0, real_gpu_only = true }
 
+[app.sharpen]
+# From the end of a zoom gesture until every visible tile is sharp again. Includes the
+# 80 ms wait that makes sure the gesture really ended.
+after_zoom_p50_ms = { max = 250, real_gpu_only = true }
+after_zoom_max_ms = { max = 400, real_gpu_only = true }
+
 [app.idle]
 # With nothing happening the app must not draw or use CPU (battery life). Measured over 5 s,
 # starting 1 s after the last activity (once prefetching has finished) and ending 0.5 s

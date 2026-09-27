@@ -411,6 +411,8 @@ impl ViewerApp {
         });
 
         #[cfg(feature = "automation")]
+        let zoom_settled = self.settle.render_zoom() == self.camera.zoom();
+        #[cfg(feature = "automation")]
         let automating = match &mut self.automation {
             Some(automation) => automation.drive(
                 &mut self.camera,
@@ -418,6 +420,7 @@ impl ViewerApp {
                     document_open: self.document.id.is_some(),
                     render_complete: self.render_complete,
                     tiles_pending: self.tiles.has_pending_work(),
+                    zoom_settled,
                     content,
                     view,
                     dt,

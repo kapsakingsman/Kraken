@@ -43,7 +43,12 @@ enum Action {
     Tour(f32),
     /// Wait until no tiles are rendering, including prefetched ones.
     Settle,
+    /// A 0.4 s zoom gesture to this zoom, then wait until the view is sharp again.
+    ZoomTo(f32),
 }
+
+/// Length of the zoom gesture in [`Action::ZoomTo`].
+const GESTURE_SECONDS: f32 = 0.4;
 
 #[derive(Clone, Copy, Debug)]
 struct Phase {
@@ -76,6 +81,12 @@ fn scenario(name: &str) -> Option<Vec<Phase>> {
             .into_iter()
             .map(|name| phase(name, 6.0, Action::ZoomSweep))
             .collect(),
+        // Zoom gestures to different levels; each measures how long the view stays blurry
+        // after the fingers stop.
+        "sharpen" => [200.0, 400.0, 150.0, 300.0, 100.0, 250.0]
+            .into_iter()
+            .map(|zoom| phase("sharpen", 10.0, Action::ZoomTo(zoom)))
+            .collect(),
         "smoke" => vec![
             phase("scroll", 2.0, Action::Scroll(2400.0)),
             phase("zoom", 6.0, Action::ZoomSweep),
@@ -94,6 +105,10 @@ pub struct Automation {
     first_page_unix_ms: Option<f64>,
     /// Frames drawn from opening the document to the first sharp page.
     frames_to_first_page: u32,
+    gesture_start_zoom: Option<f32>,
+    gesture_end: Option<Instant>,
+    /// For each zoom gesture: milliseconds from the fingers stopping to a sharp view.
+    sharpen_ms: Vec<f64>,
     current: usize,
     phase_started: Option<Instant>,
     phase_log: Vec<serde_json::Value>,
@@ -109,6 +124,8 @@ pub struct FrameState {
     pub document_open: bool,
     pub render_complete: bool,
     pub tiles_pending: bool,
+    /// Tiles are requested for the zoom on screen (not waiting for a gesture to settle).
+    pub zoom_settled: bool,
     pub content: (f32, f32),
     pub view: (f32, f32),
     pub dt: f32,
@@ -131,6 +148,9 @@ impl Automation {
             first_page_ms: None,
             first_page_unix_ms: None,
             frames_to_first_page: 0,
+            gesture_start_zoom: None,
+            gesture_end: None,
+            sharpen_ms: Vec::new(),
             current: 0,
             phase_started: None,
             phase_log: Vec::new(),
@@ -212,9 +232,29 @@ impl Automation {
                 done |= camera.y.position() >= max_y;
             }
             Action::Settle => done |= state.render_complete && !state.tiles_pending,
+            Action::ZoomTo(target) => {
+                let start_zoom = *self.gesture_start_zoom.get_or_insert(camera.zoom());
+                if elapsed < GESTURE_SECONDS {
+                    let t = elapsed / GESTURE_SECONDS;
+                    let zoom = start_zoom * (target / start_zoom).powf(t);
+                    camera.zoom_around(zoom, center, state.content, state.view);
+                } else {
+                    let stopped = *self.gesture_end.get_or_insert_with(|| {
+                        camera.zoom_around(target, center, state.content, state.view);
+                        Instant::now()
+                    });
+                    if state.zoom_settled && state.render_complete {
+                        self.sharpen_ms
+                            .push(stopped.elapsed().as_secs_f64() * 1000.0);
+                        done = true;
+                    }
+                }
+            }
         }
 
         if done {
+            self.gesture_start_zoom = None;
+            self.gesture_end = None;
             if let Some(entry) = self.phase_log.last_mut() {
                 entry["end_unix_ms"] = json!(unix_ms());
                 entry["seconds"] = json!(elapsed);
@@ -290,6 +330,7 @@ impl Automation {
                 "frames_to_first_page": self.frames_to_first_page,
             },
             "phases": self.phase_log,
+            "sharpen_ms": self.sharpen_ms,
             "frames": self.frames,
             "tiles": {
                 "rendered": tiles.rendered,

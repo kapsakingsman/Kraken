@@ -10,9 +10,10 @@ use pdf_view::TileCache;
 /// GPU memory for page tiles. A 512×512 tile takes 1 MB.
 const MEMORY_BUDGET: usize = 300 * 1024 * 1024;
 
-/// Uploading a tile costs about a millisecond of UI time, so spread them over frames to
-/// stay inside the 144 Hz frame budget.
-const UPLOADS_PER_FRAME: usize = 4;
+/// GPU upload budget per frame. Uploads run at the end of the frame, so the limit is in
+/// bytes. 12 MB is 12 full tiles: after a zoom settles, a 1080p view (about 12 tiles) turns
+/// sharp in one frame. perf-runner's `ui_cpu_p99_ms` checks that frames stay in budget.
+const UPLOAD_BYTES_PER_FRAME: usize = 12 * 1024 * 1024;
 
 /// Scale of the page preview shown until the sharp tiles arrive (about 22 DPI): cheap
 /// enough to render for every page the moment it scrolls into view.
@@ -62,7 +63,7 @@ impl TileManager {
         }
     }
 
-    /// Collects finished tiles and uploads up to [`UPLOADS_PER_FRAME`] of them.
+    /// Collects finished tiles and uploads up to [`UPLOAD_BYTES_PER_FRAME`] of them.
     pub fn begin_frame(&mut self, engine: &Engine, ctx: &egui::Context) {
         self.cache.begin_frame();
         for result in engine.results().try_iter() {
@@ -101,7 +102,7 @@ impl TileManager {
         self.stats.peak_ready_bytes = self.stats.peak_ready_bytes.max(ready_bytes);
 
         let mut uploaded = 0;
-        while uploaded < UPLOADS_PER_FRAME {
+        while uploaded < UPLOAD_BYTES_PER_FRAME {
             let Some(result) = self.ready.pop_front() else {
                 break;
             };
@@ -114,7 +115,7 @@ impl TileManager {
                     self.cache.insert(result.key, texture, bytes);
                     self.stats.peak_cache_bytes =
                         self.stats.peak_cache_bytes.max(self.cache.bytes());
-                    uploaded += 1;
+                    uploaded += bytes;
                 }
                 Err(_) => {
                     self.failed.insert(result.key);

@@ -39,7 +39,7 @@ struct Args {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "startup,scroll,zoom,idle,tour,soak"
+        default_value = "startup,scroll,zoom,sharpen,idle,tour,soak"
     )]
     scenarios: Vec<String>,
 
@@ -442,6 +442,28 @@ fn app_scenario(
             soak if soak.starts_with("soak-") => soak_peaks.push(max(&phase_rss)),
             _ => {}
         }
+    }
+    if scenario == "sharpen" {
+        let times: Vec<f64> = report["sharpen_ms"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_f64)
+            .collect();
+        ctx.report.notes.push(format!(
+            "Zoom stop to sharp (ms), one per gesture: {}",
+            times
+                .iter()
+                .map(|t| format!("{t:.0}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        ctx.add(
+            "app.sharpen.after_zoom_p50_ms",
+            percentile(&times, 0.5),
+            "ms",
+        );
+        ctx.add("app.sharpen.after_zoom_max_ms", max(&times), "ms");
     }
     if let (Some(first), Some(last)) = (soak_peaks.first(), soak_peaks.last()) {
         let peaks: Vec<String> = soak_peaks.iter().map(|p| format!("{p:.0}")).collect();
