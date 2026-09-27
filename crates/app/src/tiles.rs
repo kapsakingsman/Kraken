@@ -4,7 +4,9 @@
 use std::collections::{HashSet, VecDeque};
 
 use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
-use pdf_engine::{Engine, EngineError, Quality, TILE_SIZE, Tile, TileKey, TileRequest, TileResult};
+use pdf_engine::{
+    EngineError, Quality, RenderPool, TILE_SIZE, Tile, TileKey, TileRequest, TileResult,
+};
 use pdf_view::TileCache;
 
 /// GPU memory for page tiles. A 512×512 tile takes 1 MB.
@@ -36,7 +38,7 @@ pub struct TileManager {
     last_wanted: Vec<TileKey>,
     generation: u64,
     /// Results taken from the engine so far, so it can skip requests for tiles it has
-    /// already sent (see `Engine::set_wanted`).
+    /// already sent (see `RenderPool::set_wanted`).
     results_read: u64,
     stats: TileStats,
 }
@@ -81,7 +83,7 @@ impl TileManager {
     }
 
     /// Collects finished tiles and uploads up to [`UPLOAD_BYTES_PER_FRAME`] of them.
-    pub fn begin_frame(&mut self, engine: &Engine, ctx: &egui::Context) {
+    pub fn begin_frame(&mut self, engine: &RenderPool, ctx: &egui::Context) {
         self.cache.begin_frame();
         for result in engine.results().try_iter() {
             self.results_read += 1;
@@ -197,7 +199,7 @@ impl TileManager {
     /// Sends this frame's requests. When the set of wanted tiles changed (the view
     /// scrolled or zoomed), the engine drops queued tiles nobody is waiting for any more,
     /// and stops rendering one that is no longer wanted.
-    pub fn end_frame(&mut self, engine: &Engine) {
+    pub fn end_frame(&mut self, engine: &RenderPool) {
         let mut keys: Vec<TileKey> = self.wanted.iter().map(|r| r.key).collect();
         keys.sort();
         if keys == self.last_wanted {

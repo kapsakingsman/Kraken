@@ -8,9 +8,10 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use pdfium_render::prelude::*;
 
+use crate::delivered::Delivered;
 use crate::geometry::{self, PageSize, TILE_SIZE, TileRect};
 use crate::queue::TileQueue;
-use crate::{DocId, DocInfo, EngineError, Quality, Tile, TileKey, TileRequest, TileResult};
+use crate::{DocId, DocInfo, EngineError, Quality, Tile, TileRequest, TileResult};
 
 pub struct EngineConfig {
     /// Folder containing the PDFium library. `None` uses [`crate::locate_pdfium`].
@@ -38,6 +39,7 @@ enum Command {
     Close(DocId),
     Tile(TileRequest),
     SetGeneration(u64),
+    Trim,
     Wanted {
         generation: u64,
         requests: Vec<TileRequest>,
@@ -172,6 +174,12 @@ impl Engine {
         });
     }
 
+    /// Frees memory that only speeds up later renders: parsed pages and the tile bitmap.
+    /// The open documents stay open.
+    pub fn trim(&self) {
+        let _ = self.send(Command::Trim);
+    }
+
     pub fn results(&self) -> &Receiver<TileResult> {
         &self.results
     }
@@ -208,41 +216,6 @@ struct Worker<'p> {
     /// close the document being rendered).
     deferred: Vec<Command>,
     delivered: Delivered,
-}
-
-/// Results sent back, numbered in sending order, remembering which tiles the recent ones
-/// carried. A request made before the caller read such a result is a duplicate.
-#[derive(Default)]
-struct Delivered {
-    sent: u64,
-    recent: std::collections::VecDeque<(u64, TileKey, Quality)>,
-}
-
-impl Delivered {
-    /// How many recent results are remembered; far more than can be in flight at once.
-    const REMEMBERED: usize = 1024;
-
-    fn record(&mut self, key: TileKey, quality: Quality, rendered: bool) {
-        if rendered {
-            if self.recent.len() == Self::REMEMBERED {
-                self.recent.pop_front();
-            }
-            self.recent.push_back((self.sent, key, quality));
-        }
-        self.sent += 1;
-    }
-
-    /// Whether `request` asks for a tile sent in a result the caller had not read yet.
-    fn is_unread(&self, request: &TileRequest, results_read: Option<u64>) -> bool {
-        let Some(read) = results_read else {
-            return false;
-        };
-        self.recent
-            .iter()
-            .rev()
-            .take_while(|(n, _, _)| *n >= read)
-            .any(|(_, key, quality)| *key == request.key && *quality == request.quality)
-    }
 }
 
 struct OpenDoc<'p> {
@@ -337,6 +310,12 @@ impl<'p> Worker<'p> {
                 requests,
                 results_read,
             ),
+            Command::Trim => {
+                for doc in self.docs.values_mut() {
+                    doc.pages.clear();
+                }
+                self.bitmap = None;
+            }
             Command::Shutdown => return false,
         }
         true

@@ -15,6 +15,13 @@ use std::sync::{Arc, OnceLock};
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    // A render worker (see pdf_engine::RenderPool): PDFium only, no window.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(startup::WORKER_FLAG)) {
+        std::process::exit(match pdf_engine::run_worker() {
+            Ok(()) => 0,
+            Err(_) => 1,
+        });
+    }
     #[cfg(feature = "automation")]
     automation::mark("main");
     let path = std::env::args_os().nth(1).map(PathBuf::from);

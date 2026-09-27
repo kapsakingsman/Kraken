@@ -45,6 +45,18 @@ impl TileQueue {
         None
     }
 
+    /// Queued requests of at least `min_generation`, most urgent first.
+    pub fn sorted(&self, min_generation: u64) -> Vec<TileRequest> {
+        let mut pending: Vec<(u64, TileRequest)> = self
+            .pending
+            .values()
+            .filter(|(_, r)| r.generation >= min_generation)
+            .copied()
+            .collect();
+        pending.sort_by_key(|(seq, r)| (r.priority, *seq));
+        pending.into_iter().map(|(_, r)| r).collect()
+    }
+
     /// Removes and returns the queued request for `key` if it satisfies `accept`.
     pub fn take_if(
         &mut self,

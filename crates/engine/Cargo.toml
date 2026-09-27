@@ -10,5 +10,12 @@ crossbeam-channel = "0.5.17"
 pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_latest", "thread_safe"] }
 thiserror = "2.0.21"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_System_Power",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3.27.0"

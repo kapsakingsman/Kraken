@@ -5,10 +5,15 @@
 //! finished tiles are delivered as RGBA pixels ready to upload to the GPU.
 
 mod actor;
+mod delivered;
 mod error;
 pub mod geometry;
 mod library;
+mod pool;
+pub mod protocol;
 mod queue;
+mod system;
+mod worker;
 
 use std::time::Duration;
 
@@ -16,6 +21,8 @@ pub use actor::{Engine, EngineConfig};
 pub use error::EngineError;
 pub use geometry::{PageSize, Scale, TILE_SIZE, TileRect};
 pub use library::locate_pdfium;
+pub use pool::{PoolConfig, PoolStatus, RenderPool, WorkerCommand};
+pub use worker::run_worker;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DocId(pub u64);

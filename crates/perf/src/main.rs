@@ -111,6 +111,32 @@ impl Ctx<'_> {
         }
     }
 
+    /// Reports the render workers a scenario used: how many ran, how many tiles they
+    /// rendered and the memory they took on top of the app's own.
+    fn note_workers(&mut self, scenario: &str, report: &Value, samples: &[Sample]) {
+        let workers = &report["workers"];
+        let peak = workers["peak"].as_f64().unwrap_or(0.0);
+        let memory = samples.iter().map(|s| s.workers_mb).fold(0.0, f64::max);
+        self.add(&format!("app.{scenario}.workers_peak"), peak, "processes");
+        self.add(
+            &format!("app.{scenario}.tiles_by_workers"),
+            workers["tiles"].as_f64().unwrap_or(0.0),
+            "tiles",
+        );
+        self.add(&format!("app.{scenario}.workers_peak_rss_mb"), memory, "MB");
+        if let Some(error) = workers["error"].as_str() {
+            self.report
+                .notes
+                .push(format!("{scenario}: render workers not available: {error}"));
+        }
+        if workers["crashes"].as_f64().unwrap_or(0.0) > 0.0 {
+            self.report.notes.push(format!(
+                "{scenario}: render workers crashed: {}",
+                workers["crashes"]
+            ));
+        }
+    }
+
     fn add(&mut self, name: &str, value: f64, unit: &'static str) {
         self.report
             .add(self.budgets, self.real_gpu, name, value, unit);
@@ -274,6 +300,8 @@ struct Sample {
     /// Percent of one CPU core.
     cpu_pct: f64,
     rss_mb: f64,
+    /// Memory of the app's render worker processes together.
+    workers_mb: f64,
 }
 
 /// Builds the app with the `automation` feature into its own target folder, so a normal
@@ -410,6 +438,7 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
     let report_path = out.join(format!("app-{scenario}.json"));
     let (_, report, samples) = run_app(app, scenario, pdf, &report_path)?;
     ctx.note_gpu(&report);
+    ctx.note_workers(scenario, &report, &samples);
     let rss: Vec<f64> = samples.iter().map(|s| s.rss_mb).collect();
     let mut soak_peaks = Vec::new();
 
@@ -581,7 +610,8 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
         );
         ctx.add(
             &format!("app.{scenario}.tiles_cancelled"),
-            tiles["cancelled"].as_f64().unwrap_or(0.0),
+            tiles["cancelled"].as_f64().unwrap_or(0.0)
+                + report["workers"]["cancelled"].as_f64().unwrap_or(0.0),
             "tiles",
         );
         ctx.add(
@@ -625,6 +655,7 @@ fn sample_until_exit(mut child: Child) -> Result<Vec<Sample>> {
                     unix_ms: unix_ms(),
                     cpu_pct: 0.0,
                     rss_mb: peak_mb,
+                    workers_mb: 0.0,
                 });
             }
             return Ok(samples);
@@ -636,6 +667,18 @@ fn sample_until_exit(mut child: Child) -> Result<Vec<Sample>> {
         let now = Instant::now();
         let full_sample = now >= next_sample;
         let kind = if full_sample { full } else { memory_only };
+        let mut workers_mb = 0.0;
+        if full_sample {
+            // The app's render workers are its child processes.
+            system.refresh_processes_specifics(ProcessesToUpdate::All, true, memory_only);
+            workers_mb = system
+                .processes()
+                .values()
+                // On Linux the app's own threads are listed as its children too.
+                .filter(|p| p.parent() == Some(pid) && p.thread_kind().is_none())
+                .map(|p| p.memory() as f64 / (1024.0 * 1024.0))
+                .sum();
+        }
         system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, kind);
         if let Some(process) = system.process(pid) {
             peak_mb = peak_mb.max(process.memory() as f64 / (1024.0 * 1024.0));
@@ -644,6 +687,7 @@ fn sample_until_exit(mut child: Child) -> Result<Vec<Sample>> {
                     unix_ms: unix_ms(),
                     cpu_pct: process.cpu_usage() as f64,
                     rss_mb: peak_mb,
+                    workers_mb,
                 });
                 peak_mb = 0.0;
             }

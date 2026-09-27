@@ -71,6 +71,8 @@ tiles_duplicated = { max = 0 }
 # before the test wakes the app up again.
 process_cpu_pct = { max = 1.0 }
 frames = { max = 2 }
+# Render workers waiting on standby (PDFium loaded, the document open) cost little.
+workers_peak_rss_mb = { max = 96 }
 
 [app.tour]
 # Scrolling through all 500 pages: the tile cache must hold memory at its budget.

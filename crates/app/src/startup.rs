@@ -9,7 +9,10 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::{Receiver, bounded};
 use eframe::egui;
 use pdf_engine::geometry::{page_px_size, tile_grid};
-use pdf_engine::{DocInfo, Engine, EngineConfig, Quality, Scale, TileKey, TileRequest};
+use pdf_engine::{
+    DocInfo, EngineConfig, PoolConfig, Quality, RenderPool, Scale, TileKey, TileRequest,
+    WorkerCommand,
+};
 
 use crate::tiles::preview_px_per_pt;
 
@@ -32,7 +35,7 @@ pub type OpenResult = Result<Opened, String>;
 
 /// What the startup thread prepared for the window.
 pub struct Boot {
-    pub engine: Result<Arc<Engine>, String>,
+    pub engine: Result<Arc<RenderPool>, String>,
     pub opening: Option<Receiver<OpenResult>>,
 }
 
@@ -45,14 +48,19 @@ pub fn begin(
     repaint: Arc<OnceLock<egui::Context>>,
 ) -> JoinHandle<Boot> {
     thread::spawn(move || {
-        let config = EngineConfig {
-            // Enough parsed pages for everything on screen plus the pages prefetched around it.
-            page_cache: 16,
-            ..EngineConfig::default()
+        let config = PoolConfig {
+            engine: EngineConfig {
+                // Enough parsed pages for everything on screen plus the pages prefetched
+                // around it.
+                page_cache: 16,
+                ..EngineConfig::default()
+            },
+            worker: worker_command(),
+            ..PoolConfig::default()
         };
         let wake = Arc::clone(&repaint);
         // Every finished tile wakes the UI, so it appears without waiting for input.
-        let engine = Engine::start_with_waker(config, move || {
+        let engine = RenderPool::start(config, move || {
             if let Some(ctx) = wake.get() {
                 ctx.request_repaint();
             }
@@ -81,7 +89,7 @@ pub fn begin(
 /// Opens a PDF on a background thread so a large file cannot freeze the window. With a
 /// `display_scale`, the first page is also requested at the start zoom right away.
 pub fn open_in_background(
-    engine: Arc<Engine>,
+    engine: Arc<RenderPool>,
     path: PathBuf,
     display_scale: Option<f32>,
     notify: impl Fn() + Send + 'static,
@@ -114,6 +122,17 @@ pub fn open_in_background(
     });
     rx
 }
+
+/// The app runs itself as its render workers, so there is one executable to ship.
+fn worker_command() -> Option<WorkerCommand> {
+    Some(WorkerCommand {
+        program: std::env::current_exe().ok()?,
+        args: vec![WORKER_FLAG.into()],
+    })
+}
+
+/// Command-line flag that starts the app as a render worker instead of a window.
+pub const WORKER_FLAG: &str = "--render-worker";
 
 /// The first page's preview and, if the display scale is known, its sharp tiles at the
 /// start zoom, with the same keys and priorities the view will ask for.

@@ -9,7 +9,7 @@ use eframe::egui::{
     Rect, RichText, Sense, Vec2, pos2, vec2,
 };
 use pdf_engine::geometry::{page_px_size, tile_rect};
-use pdf_engine::{DocId, Engine, PageSize, Quality, Scale, TILE_SIZE, TileKey};
+use pdf_engine::{DocId, PageSize, Quality, RenderPool, Scale, TILE_SIZE, TileKey};
 use pdf_view::camera::{fit_page_zoom, fit_width_zoom, step_zoom, wheel_notches};
 use pdf_view::{AutoScroll, Camera, DocLayout, SmoothScroll, ZoomSettle, visible_tiles};
 
@@ -52,7 +52,9 @@ enum ZoomCommand {
 }
 
 pub struct ViewerApp {
-    engine: Result<Arc<Engine>, String>,
+    engine: Result<Arc<RenderPool>, String>,
+    /// Render workers were started (once the first page was on screen).
+    prewarmed: bool,
     document: Document,
     camera: Camera,
     settle: ZoomSettle,
@@ -92,6 +94,7 @@ impl ViewerApp {
         ViewerApp {
             message,
             engine: boot.engine,
+            prewarmed: false,
             document: demo_document(),
             camera: Camera::default(),
             settle: ZoomSettle::new(START_ZOOM),
@@ -585,6 +588,14 @@ impl ViewerApp {
         if missing == 0 && self.document.id.is_some() {
             self.render_complete = true;
             self.fallback_scale = None;
+            // The first page is on screen: now the render workers can start without
+            // slowing down startup.
+            if !self.prewarmed
+                && let Ok(engine) = &self.engine
+            {
+                engine.prewarm();
+                self.prewarmed = true;
+            }
         }
 
         paint_scrollbar(&painter, v_bar, v_thumb);
@@ -656,7 +667,17 @@ impl eframe::App for ViewerApp {
             self.tiles.end_frame(engine);
         }
 
-        let tile_status = self.tiles.status();
+        let mut tile_status = self.tiles.status();
+        if let Ok(engine) = &self.engine {
+            let workers = engine.status();
+            tile_status.push_str(&format!(
+                "\nworkers  {} ready, {} busy, {} tiles rendered",
+                workers.helpers, workers.busy_helpers, workers.tiles_by_helpers
+            ));
+            if let Some(error) = &workers.helper_error {
+                tile_status.push_str(&format!("\n         not available: {error}"));
+            }
+        }
         if let HudAction::RunScrollTest =
             self.hud
                 .show(&ctx, self.auto_scroll.is_some(), &tile_status)
@@ -676,7 +697,8 @@ impl eframe::App for ViewerApp {
 
         #[cfg(feature = "automation")]
         if let Some(automation) = &mut self.automation {
-            automation.end_frame(&ctx, frame.info().cpu_usage, self.tiles.stats());
+            let workers = self.engine.as_ref().map(|e| e.status()).unwrap_or_default();
+            automation.end_frame(&ctx, frame.info().cpu_usage, self.tiles.stats(), &workers);
         }
 
         let animating = moving || self.auto_scroll.is_some();

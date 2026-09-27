@@ -39,6 +39,10 @@ pub enum EngineError {
     #[error("rendering was cancelled")]
     Cancelled,
 
+    /// A render worker process failed: it could not start, open the file, or it crashed.
+    #[error("render worker: {0}")]
+    Worker(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

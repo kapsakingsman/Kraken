@@ -23,6 +23,15 @@ pub struct Scale(u32);
 impl Scale {
     const ONE: f32 = 65536.0;
 
+    /// The raw 16.16 fixed-point value, for sending a scale to a render worker.
+    pub fn to_bits(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_bits(bits: u32) -> Self {
+        Scale(bits)
+    }
+
     pub fn from_px_per_pt(px_per_pt: f32) -> Self {
         Scale((px_per_pt * Self::ONE).round().max(1.0) as u32)
     }

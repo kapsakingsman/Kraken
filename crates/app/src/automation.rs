@@ -131,6 +131,9 @@ pub struct Automation {
     gesture_end: Option<Instant>,
     /// For each zoom gesture: milliseconds from the fingers stopping to a sharp view.
     sharpen_ms: Vec<f64>,
+    /// Most render workers running at once, and their latest counters.
+    peak_workers: usize,
+    workers: pdf_engine::PoolStatus,
     /// Wheel notches to send with the next frame's input.
     pending_wheel: Option<i32>,
     /// Notches sent so far in the current [`Action::WheelSpin`], and when the last one was.
@@ -180,6 +183,8 @@ impl Automation {
             gesture_end: None,
             sharpen_ms: Vec::new(),
             pending_wheel: None,
+            peak_workers: 0,
+            workers: pdf_engine::PoolStatus::default(),
             spin_sent: 0,
             spin_last: None,
             current: 0,
@@ -352,7 +357,15 @@ impl Automation {
 
     /// Records the frame's timing, and when the scenario is over, writes the report and
     /// closes the window.
-    pub fn end_frame(&mut self, ctx: &egui::Context, cpu_usage_s: Option<f32>, tiles: &TileStats) {
+    pub fn end_frame(
+        &mut self,
+        ctx: &egui::Context,
+        cpu_usage_s: Option<f32>,
+        tiles: &TileStats,
+        workers: &pdf_engine::PoolStatus,
+    ) {
+        self.peak_workers = self.peak_workers.max(workers.helpers);
+        self.workers = workers.clone();
         let now = Instant::now();
         if let (Some(last), Some(phase)) = (
             self.last_frame,
@@ -425,6 +438,13 @@ impl Automation {
                 "discarded": tiles.discarded,
                 "cancelled": tiles.cancelled,
                 "duplicates": tiles.duplicates,
+            },
+            "workers": {
+                "peak": self.peak_workers,
+                "tiles": self.workers.tiles_by_helpers,
+                "cancelled": self.workers.tiles_cancelled,
+                "crashes": self.workers.helper_crashes,
+                "error": self.workers.helper_error,
             },
         });
         if let Err(e) = std::fs::write(path, report.to_string()) {
