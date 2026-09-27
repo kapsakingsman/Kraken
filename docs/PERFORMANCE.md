@@ -226,3 +226,35 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
    still being prefetched, which is real work, and on Windows it counted the frame the test
    draws to end the phase (19 samples of 0% and one of 213% under software rendering). The
    idle window now excludes both; the app itself uses 0% CPU when idle on Linux and Windows.
+9. **Some tiles were rendered twice.** The view asked again for tiles whose result it had
+   not read yet (8–10 tiles per zoom scenario, ~9% in `sharpen`). The view now tells the
+   engine how many results it has read, and the engine skips requests for tiles it has
+   already sent. `tiles_duplicated` is now 0 in every scenario, with a budget of 0.
+10. **PDFium only started once the window was ready.** Creating the window and the GPU
+    device takes ~270 ms on the development PC; opening the file and rendering the first
+    page came after that. They now run side by side: a startup thread starts PDFium,
+    opens the file and renders the first page before the window exists. The tiles need
+    the display scale, which the app remembers from the last run (on the very first start
+    only the preview is rendered ahead).
+
+    | Start to first sharp page, Linux software GPU | Before | After |
+    |---|---:|---:|
+    | Warm (median of 3) | 167 ms | ~120 ms |
+    | Cold | 179 ms | ~115 ms |
+
+    The startup run became too short for 250 ms sampling to catch its memory peak, so
+    perf-runner now reads memory every 10 ms.
+11. **One CPU core rendered everything.** PDFium can only be used from one thread per
+    process, so slow pages now also render in helper processes (see
+    [ARCHITECTURE.md](ARCHITECTURE.md#render-workers)). Ordinary pages never use them.
+
+    | `issue16263.pdf`, Linux software GPU (4 cores, 2 helpers) | 1 process | With helpers |
+    |---|---:|---:|
+    | Zoom stop to sharp, median | 502 ms | 380 ms |
+    | Zoom stop to sharp, slowest | 757 ms | 487 ms |
+    | Ctrl+wheel notch to sharp, slowest | 696 ms | 397 ms |
+    | Helpers' memory while rendering / on standby | – | 133 MB / 18 MB |
+
+    On this machine the software GPU (llvmpipe) competes for the same 4 cores; with a real
+    GPU the helpers have the cores to themselves. With the 500-page text fixture the
+    helpers render no tiles at all, and idle CPU stays at 0%.

@@ -46,7 +46,7 @@ on the window.
 | Arrow keys, Page Up/Down, Space, Shift+Space | Scroll |
 | Home / End | First / last page |
 | Scrollbar | Drag the thumb, or click the track |
-| F3 | Show or hide the frame timing HUD (also shows tile cache use) |
+| F3 | Show or hide the HUD: frame timing, tile cache, GPU in use, render workers |
 
 During a zoom gesture the existing tiles are stretched on the GPU, so zooming never waits for
 rendering; 120 ms after the zoom stops, sharp tiles for the new zoom replace them. While a
