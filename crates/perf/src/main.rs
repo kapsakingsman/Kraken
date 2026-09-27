@@ -98,6 +98,14 @@ impl Ctx<'_> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if let Some(pdf) = &args.pdf
+        && !pdf.is_file()
+    {
+        bail!(
+            "--pdf: no such file: {} (put the path in quotes if it contains spaces)",
+            pdf.display()
+        );
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let out = args
         .out
