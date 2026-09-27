@@ -38,7 +38,7 @@ struct Args {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "startup,scroll,zoom,sharpen,idle,tour,soak"
+        default_value = "startup,scroll,zoom,sharpen,wheel,idle,tour,soak"
     )]
     scenarios: Vec<String>,
 
@@ -478,15 +478,23 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
             _ => {}
         }
     }
-    if scenario == "sharpen" {
+    if scenario == "sharpen" || scenario == "wheel" {
         let times: Vec<f64> = report["sharpen_ms"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_f64)
             .collect();
+        let (what, key) = if scenario == "sharpen" {
+            ("Zoom stop to sharp (ms), one per gesture", "after_zoom")
+        } else {
+            (
+                "Ctrl+wheel notch to sharp (ms), one per notch",
+                "after_notch",
+            )
+        };
         ctx.report.notes.push(format!(
-            "Zoom stop to sharp (ms), one per gesture: {}",
+            "{what}: {}",
             times
                 .iter()
                 .map(|t| format!("{t:.0}"))
@@ -494,11 +502,11 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
                 .join(", ")
         ));
         ctx.add(
-            "app.sharpen.after_zoom_p50_ms",
+            &format!("app.{scenario}.{key}_p50_ms"),
             percentile(&times, 0.5),
             "ms",
         );
-        ctx.add("app.sharpen.after_zoom_max_ms", max(&times), "ms");
+        ctx.add(&format!("app.{scenario}.{key}_max_ms"), max(&times), "ms");
     }
     if let (Some(first), Some(last)) = (soak_peaks.first(), soak_peaks.last()) {
         let peaks: Vec<String> = soak_peaks.iter().map(|p| format!("{p:.0}")).collect();

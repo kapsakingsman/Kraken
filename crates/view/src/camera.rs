@@ -123,6 +123,17 @@ pub fn step_zoom(zoom: f32, direction: i32) -> f32 {
     }
 }
 
+/// Whole mouse-wheel notches in a Ctrl+wheel delta measured in lines, or `None` when the
+/// delta is not a whole number of notches.
+///
+/// A mouse wheel moves one line per notch. Precision touchpads and free-spinning wheels send
+/// fractions of a line instead (on Windows a touchpad pinch arrives as Ctrl+wheel too), and
+/// those should zoom smoothly rather than jump a whole step.
+pub fn wheel_notches(lines: f32) -> Option<i32> {
+    let notches = lines.round();
+    (notches != 0.0 && (lines - notches).abs() < 0.01).then_some(notches as i32)
+}
+
 /// Zoom at which a page `width_pt` wide fills `view_w` screen points.
 pub fn fit_width_zoom(width_pt: f32, view_w: f32) -> f32 {
     (view_w / (width_pt.max(1.0) * SCREEN_PER_PT_AT_100) * 100.0).clamp(ZOOM_MIN, ZOOM_MAX)
@@ -281,5 +292,13 @@ mod tests {
         settle.snap(250.0);
         assert_eq!(settle.render_zoom(), 250.0);
         assert_eq!(settle.update(250.0, 0.0), None);
+    }
+    #[test]
+    fn whole_wheel_notches_are_steps_and_fractions_are_smooth() {
+        assert_eq!(wheel_notches(1.0), Some(1));
+        assert_eq!(wheel_notches(-2.0), Some(-2));
+        assert_eq!(wheel_notches(0.0), None);
+        assert_eq!(wheel_notches(0.25), None);
+        assert_eq!(wheel_notches(-1.4), None);
     }
 }

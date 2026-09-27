@@ -4,7 +4,7 @@
 //! it. The `perf-runner` tool (crates/perf) starts the app with:
 //!
 //! - `KRAKEN_AUTOMATION`: the scenario name (`startup`, `scroll`, `zoom`, `idle`, `tour`,
-//!   `soak`, `smoke`),
+//!   `soak`, `sharpen`, `wheel`, `smoke`),
 //! - `KRAKEN_PERF_REPORT`: where to write the JSON report,
 //!
 //! and measures CPU and memory of the process from outside while it runs.
@@ -45,6 +45,9 @@ enum Action {
     Settle,
     /// A 0.4 s zoom gesture to this zoom, then wait until the view is sharp again.
     ZoomTo(f32),
+    /// Real Ctrl+mouse-wheel input: this many notches (negative zooms out) in one frame over
+    /// the middle of the window, then wait until the view is sharp again.
+    WheelNotches(i32),
 }
 
 /// Length of the zoom gesture in [`Action::ZoomTo`].
@@ -87,6 +90,11 @@ fn scenario(name: &str) -> Option<Vec<Phase>> {
             .into_iter()
             .map(|zoom| phase("sharpen", 10.0, Action::ZoomTo(zoom)))
             .collect(),
+        // Ctrl+wheel notches, sent as real input events: time from the notch to a sharp view.
+        "wheel" => [1, 1, 2, -1, 2, -3, -1]
+            .into_iter()
+            .map(|notches| phase("wheel", 10.0, Action::WheelNotches(notches)))
+            .collect(),
         "smoke" => vec![
             phase("scroll", 2.0, Action::Scroll(2400.0)),
             phase("zoom", 6.0, Action::ZoomSweep),
@@ -109,6 +117,8 @@ pub struct Automation {
     gesture_end: Option<Instant>,
     /// For each zoom gesture: milliseconds from the fingers stopping to a sharp view.
     sharpen_ms: Vec<f64>,
+    /// Wheel notches to send with the next frame's input.
+    pending_wheel: Option<i32>,
     current: usize,
     phase_started: Option<Instant>,
     phase_log: Vec<serde_json::Value>,
@@ -151,6 +161,7 @@ impl Automation {
             gesture_start_zoom: None,
             gesture_end: None,
             sharpen_ms: Vec::new(),
+            pending_wheel: None,
             current: 0,
             phase_started: None,
             phase_log: Vec::new(),
@@ -250,6 +261,17 @@ impl Automation {
                     }
                 }
             }
+            Action::WheelNotches(notches) => {
+                let start_zoom = *self.gesture_start_zoom.get_or_insert_with(|| {
+                    self.pending_wheel = Some(notches);
+                    camera.zoom()
+                });
+                let sent = *self.gesture_end.get_or_insert_with(Instant::now);
+                if camera.zoom() != start_zoom && state.zoom_settled && state.render_complete {
+                    self.sharpen_ms.push(sent.elapsed().as_secs_f64() * 1000.0);
+                    done = true;
+                }
+            }
         }
 
         if done {
@@ -265,6 +287,26 @@ impl Automation {
         }
         // Idle must not draw; wake up once when it is over.
         !matches!(phase.action, Action::Idle)
+    }
+
+    /// Adds scripted input events to the next frame.
+    pub fn raw_input(&mut self, raw_input: &mut egui::RawInput) {
+        let Some(notches) = self.pending_wheel.take() else {
+            return;
+        };
+        let Some(screen) = raw_input.screen_rect else {
+            self.pending_wheel = Some(notches);
+            return;
+        };
+        raw_input
+            .events
+            .push(egui::Event::PointerMoved(screen.center()));
+        raw_input.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, notches as f32),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::COMMAND,
+        });
     }
 
     /// Records the frame's timing, and when the scenario is over, writes the report and

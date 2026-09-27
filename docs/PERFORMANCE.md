@@ -58,6 +58,7 @@ outside every 250 ms, and reads the frame timing the app writes at the end.
 | `scroll` | 8 s scrolling at 2400 screen points/s | Missed frames, UI CPU per frame |
 | `zoom` | 100% → 800% → 50% with pauses | Missed frames, memory |
 | `sharpen` | Six 0.4 s zoom gestures to different zoom levels | Time from the end of the gesture until every visible tile is sharp |
+| `wheel` | Seven Ctrl+wheel notches, sent as real input events | Time from the notch until every visible tile is sharp |
 | `idle` | Wait for prefetching to finish, then 6 s of nothing | CPU use and frames drawn (must be ~0) |
 | `tour` | Scroll through all 500 pages | Tile cache stays at its budget; memory |
 | `soak` | The zoom sweep 5 times in one process | Memory must not keep growing (leaks) |
@@ -174,7 +175,19 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
 
    Test any PDF with `cargo run --release -p perf -- --suite app --pdf file.pdf` and the
    engine alone with `pdf-cli bench file.pdf [--draft]`.
-6. **The idle test itself was wrong at first.** It started while tiles around the view were
+6. **Ctrl+wheel zoom went blurry before turning sharp; Acrobat does not.** egui smooths
+   Ctrl+wheel into a zoom that keeps changing for about 0.15 s after the notch, and tiles
+   were only rendered 80 ms after it stopped. So every notch showed stretched, blurry tiles
+   for about a third of a second. Acrobat treats a notch as a finished action: it jumps to
+   the next zoom step and renders it at once. Now Kraken does the same: each notch jumps to
+   the next zoom step (100 → 125 → 150 → 200 …) around the mouse pointer and renders right
+   away. Touchpad pinches still zoom smoothly and render when the fingers stop.
+
+   | `wheel` scenario, Linux software GPU | Before | After |
+   |---|---:|---:|
+   | Notch to sharp, median | 347 ms | 36 ms |
+   | Notch to sharp, slowest | 413 ms | 89 ms |
+7. **The idle test itself was wrong at first.** It started while tiles around the view were
    still being prefetched, which is real work, and on Windows it counted the frame the test
    draws to end the phase (19 samples of 0% and one of 213% under software rendering). The
    idle window now excludes both; the app itself uses 0% CPU when idle on Linux and Windows.
