@@ -42,6 +42,11 @@ At 144 Hz each frame has 6.9 ms. The UI thread should use under 3 ms of that.
   exact re-render about 120 ms after it stops, old tiles kept until new ones arrive, stale
   requests dropped, progressive rendering for heavy pages, Fit Width / Fit Page / 100%.
   *Done when:* 25%–1600% is smooth, memory stays flat, with no flicker or seams.
+  (Built: zoom 10%–1600% around the pointer, stretched tiles during the gesture, sharp
+  re-render after 120 ms, previous tiles kept until the new ones arrive, fit modes that follow
+  the window size, horizontal scrolling. Tested: the settled view at 200% matches
+  `pdf-cli render --zoom 200` pixel for pixel. Progressive rendering is not needed yet: tiles
+  are small, and stale requests are already dropped; revisit if `bench` shows slow tiles.)
 - [ ] **5. Reader features:** text selection and copy, search, links, bookmarks, thumbnails,
   page jump, drag-and-drop, recent files, dark UI.
 - [ ] **6. Annotations:** highlight, underline, strikeout, pen, shapes, notes and text boxes,

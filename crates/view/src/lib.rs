@@ -1,10 +1,12 @@
 //! Viewer logic that does not depend on the UI toolkit, so it can be unit tested.
 
+pub mod camera;
 pub mod layout;
 pub mod scroll;
 pub mod stats;
 pub mod tiles;
 
+pub use camera::{Camera, ZoomSettle};
 pub use layout::{DocLayout, PageSlot};
 pub use scroll::{AutoScroll, SmoothScroll};
 pub use stats::{FrameSample, FrameStats, FrameSummary};

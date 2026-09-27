@@ -5,8 +5,8 @@ A fast PDF reader and editor for Windows, written in Rust on top of PDFium.
 Goals, in order: Acrobat-level sharp rendering, smooth scrolling and zooming at up to 144 Hz,
 then annotations, forms and signing. See [docs/ROADMAP.md](docs/ROADMAP.md) for the stages.
 
-**Current stage:** 3, continuous scrolling through real page content at up to 144 Hz.
-Zooming comes in stage 4 (the view is fixed at 100%).
+**Current stage:** 4, zooming (10%–1600%) and continuous scrolling through real page content
+at up to 144 Hz.
 
 ## Setup (Windows 11)
 
@@ -38,12 +38,18 @@ on the window.
 | Input | Action |
 |---|---|
 | Mouse wheel, touchpad | Scroll (wheel steps are animated, touchpad follows your fingers) |
+| Ctrl+wheel, touchpad pinch | Zoom around the mouse pointer |
+| Ctrl+plus / Ctrl+minus | Next / previous zoom step |
+| Ctrl+0 / Ctrl+1 / Ctrl+2 | Fit page / 100% / fit width |
+| Shift+wheel | Scroll sideways (when zoomed in) |
 | Arrow keys, Page Up/Down, Space, Shift+Space | Scroll |
 | Home / End | First / last page |
 | Scrollbar | Drag the thumb, or click the track |
 | F3 | Show or hide the frame timing HUD (also shows tile cache use) |
 
-While a page's sharp tiles render, a low-resolution preview of it is shown, so pages never
+During a zoom gesture the existing tiles are stretched on the GPU, so zooming never waits for
+rendering; 120 ms after the zoom stops, sharp tiles for the new zoom replace them. While a
+page's sharp tiles render, a low-resolution preview of it is shown, so pages never
 flash blank during normal scrolling. Tiles are rendered at your screen's real pixel density
 and drawn 1:1, so the page on screen is pixel-for-pixel what `pdf-cli render` produces.
 

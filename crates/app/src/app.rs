@@ -1,4 +1,4 @@
-//! The main window: toolbar, page canvas with scrollbar, and the frame timing HUD.
+//! The main window: toolbar, page canvas with scrollbars, and the frame timing HUD.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,12 +6,13 @@ use std::thread;
 
 use crossbeam_channel::{Receiver, TryRecvError, bounded};
 use eframe::egui::{
-    self, Align, Align2, Color32, Event, FontId, Key, Layout, Modifiers, MouseWheelUnit, Rect,
-    RichText, Sense, pos2, vec2,
+    self, Align, Align2, Color32, Event, FontId, Key, Layout, Modifiers, MouseWheelUnit, Painter,
+    Rect, RichText, Sense, Vec2, pos2, vec2,
 };
 use pdf_engine::geometry::{page_px_size, tile_rect};
 use pdf_engine::{DocId, DocInfo, Engine, EngineConfig, PageSize, Scale, TILE_SIZE, TileKey};
-use pdf_view::{AutoScroll, DocLayout, SCREEN_PER_PT_AT_100, SmoothScroll, visible_tiles};
+use pdf_view::camera::{fit_page_zoom, fit_width_zoom, step_zoom};
+use pdf_view::{AutoScroll, Camera, DocLayout, SmoothScroll, ZoomSettle, visible_tiles};
 
 use crate::hud::{Hud, HudAction};
 use crate::tiles::{TileManager, preview_px_per_pt};
@@ -24,6 +25,8 @@ const SCROLL_TEST_SECONDS: f32 = 8.0;
 /// Screen points per second during the scroll test: fast, but a speed people really scroll at.
 const SCROLL_TEST_SPEED: f32 = 2400.0;
 const SCROLLBAR_WIDTH: f32 = 12.0;
+/// Space kept around the page by Fit Width and Fit Page, in screen points.
+const FIT_MARGIN: f32 = 16.0;
 const CANVAS_COLOR: Color32 = Color32::from_rgb(82, 86, 89);
 
 struct Document {
@@ -35,12 +38,32 @@ struct Document {
 
 type OpenResult = Result<(PathBuf, DocInfo), String>;
 
+/// Zoom modes that follow the window size until the user zooms by hand.
+#[derive(Clone, Copy, PartialEq)]
+enum Fit {
+    Width,
+    Page,
+}
+
+enum ZoomCommand {
+    StepIn,
+    StepOut,
+    Set(f32),
+    Fit(Fit),
+}
+
 pub struct ViewerApp {
     engine: Result<Arc<Engine>, String>,
     document: Document,
-    scroll: SmoothScroll,
-    /// Percent. Fixed at 100 until zooming is added.
-    zoom: f32,
+    camera: Camera,
+    settle: ZoomSettle,
+    fit: Option<Fit>,
+    zoom_command: Option<ZoomCommand>,
+    /// Scale of the last tile set that was complete on screen. Its tiles are drawn,
+    /// stretched, until the tiles for a new zoom arrive.
+    fallback_scale: Option<Scale>,
+    render_scale: Option<Scale>,
+    render_complete: bool,
     current_page: usize,
     hud: Hud,
     tiles: TileManager,
@@ -54,6 +77,8 @@ pub struct ViewerApp {
 
 impl ViewerApp {
     pub fn new(cc: &eframe::CreationContext, path: Option<PathBuf>) -> Self {
+        // Ctrl+plus/minus zoom the document, not egui's own UI scale.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let ctx = cc.egui_ctx.clone();
         let config = EngineConfig {
             // Enough parsed pages for everything on screen plus the pages prefetched around it.
@@ -68,8 +93,13 @@ impl ViewerApp {
             message: engine.as_ref().err().cloned(),
             engine,
             document: demo_document(),
-            scroll: SmoothScroll::default(),
-            zoom: 100.0,
+            camera: Camera::default(),
+            settle: ZoomSettle::new(100.0),
+            fit: None,
+            zoom_command: None,
+            fallback_scale: None,
+            render_scale: None,
+            render_complete: false,
             current_page: 0,
             hud: Hud::new(),
             tiles: TileManager::new(),
@@ -86,10 +116,6 @@ impl ViewerApp {
             app.open(path, &cc.egui_ctx);
         }
         app
-    }
-
-    fn screen_per_pt(&self) -> f32 {
-        SCREEN_PER_PT_AT_100 * self.zoom / 100.0
     }
 
     /// Opens a PDF on a background thread so a large file cannot freeze the window.
@@ -141,12 +167,14 @@ impl ViewerApp {
                 );
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{name} - Kraken PDF")));
                 self.tiles.clear();
+                self.fallback_scale = None;
                 self.document = Document {
                     name,
                     id: Some(info.id),
                     layout: DocLayout::new(&info.page_sizes),
                 };
-                self.scroll.jump_to(0.0);
+                self.camera.x.jump_to(0.0);
+                self.camera.y.jump_to(0.0);
                 self.message = None;
             }
             Err(e) => self.message = Some(e),
@@ -158,6 +186,39 @@ impl ViewerApp {
         let mut open_clicked = false;
         ui.horizontal(|ui| {
             open_clicked = ui.button("Open...").on_hover_text("Ctrl+O").clicked();
+            ui.separator();
+            if ui
+                .button("−")
+                .on_hover_text("Zoom out (Ctrl+minus)")
+                .clicked()
+            {
+                self.zoom_command = Some(ZoomCommand::StepOut);
+            }
+            ui.label(RichText::new(format!("{:.0}%", self.camera.zoom())).monospace());
+            if ui
+                .button("+")
+                .on_hover_text("Zoom in (Ctrl+plus)")
+                .clicked()
+            {
+                self.zoom_command = Some(ZoomCommand::StepIn);
+            }
+            if ui
+                .selectable_label(self.fit == Some(Fit::Width), "Fit width")
+                .on_hover_text("Ctrl+2")
+                .clicked()
+            {
+                self.zoom_command = Some(ZoomCommand::Fit(Fit::Width));
+            }
+            if ui
+                .selectable_label(self.fit == Some(Fit::Page), "Fit page")
+                .on_hover_text("Ctrl+0")
+                .clicked()
+            {
+                self.zoom_command = Some(ZoomCommand::Fit(Fit::Page));
+            }
+            if ui.button("100%").on_hover_text("Ctrl+1").clicked() {
+                self.zoom_command = Some(ZoomCommand::Set(100.0));
+            }
             ui.separator();
             ui.label(RichText::new(&self.document.name).strong());
             let pages = self.document.layout.slots().len();
@@ -178,137 +239,229 @@ impl ViewerApp {
         open_clicked
     }
 
-    /// Draws the pages and scrollbar and handles scrolling. Returns `true` while moving.
+    fn fit_zoom(&self, fit: Fit, view: Vec2) -> f32 {
+        let usable = vec2(
+            view.x - SCROLLBAR_WIDTH - 2.0 * FIT_MARGIN,
+            view.y - 2.0 * FIT_MARGIN,
+        );
+        let layout = &self.document.layout;
+        match fit {
+            Fit::Width => fit_width_zoom(layout.width(), usable.x),
+            Fit::Page => match layout.slots().get(self.current_page) {
+                Some(slot) => fit_page_zoom((slot.width, slot.height), (usable.x, usable.y)),
+                None => 100.0,
+            },
+        }
+    }
+
+    /// Handles zoom and scroll input, then draws the pages and scrollbars.
+    /// Returns `true` while something is moving.
     fn canvas(&mut self, ui: &mut egui::Ui) -> bool {
         let rect = ui.max_rect();
         let response = ui.allocate_rect(rect, Sense::hover());
-        let s = self.screen_per_pt();
-        let ppp = ui.ctx().pixels_per_point();
-        let layout = &self.document.layout;
-        let view_h = rect.height() / s;
-        let max_scroll = (layout.height() - view_h).max(0.0);
+        let ctx = ui.ctx().clone();
+        let ppp = ctx.pixels_per_point();
+        let view = (rect.width(), rect.height());
+        let content = (self.document.layout.width(), self.document.layout.height());
+        let center = (view.0 / 2.0, view.1 / 2.0);
         let dt = ui.input(|i| i.stable_dt).min(0.05);
 
+        // --- Zoom ---------------------------------------------------------------------
+        if let Some(command) = self.zoom_command.take() {
+            let zoom = self.camera.zoom();
+            let (target, fit) = match command {
+                ZoomCommand::StepIn => (step_zoom(zoom, 1), None),
+                ZoomCommand::StepOut => (step_zoom(zoom, -1), None),
+                ZoomCommand::Set(z) => (z, None),
+                ZoomCommand::Fit(fit) => (self.fit_zoom(fit, rect.size()), Some(fit)),
+            };
+            self.fit = fit;
+            self.camera.zoom_around(target, center, content, view);
+            if fit == Some(Fit::Page) {
+                let top = self.document.layout.page_top(self.current_page);
+                self.camera.y.jump_to(top);
+            }
+            // A deliberate jump to a new zoom: render it right away.
+            self.settle.snap(self.camera.zoom());
+        }
+        if let Some(fit) = self.fit {
+            // Keep following the window size.
+            let target = self.fit_zoom(fit, rect.size());
+            if (target - self.camera.zoom()).abs() > 0.05 {
+                self.camera.zoom_around(target, center, content, view);
+            }
+        }
+        // Ctrl+wheel and touchpad pinch (egui smooths both into one factor per frame).
+        let (zoom_delta, hover) = ui.input(|i| (i.zoom_delta(), i.pointer.hover_pos()));
+        let mut zooming = false;
+        if zoom_delta != 1.0 && response.hovered() {
+            let anchor = hover.map_or(center, |p| (p.x - rect.left(), p.y - rect.top()));
+            self.camera
+                .zoom_around(self.camera.zoom() * zoom_delta, anchor, content, view);
+            self.fit = None;
+            zooming = true;
+        }
+
+        // --- Scroll -------------------------------------------------------------------
+        let s = self.camera.screen_per_pt();
+        let view_h_pt = view.1 / s;
         if response.hovered() {
             let wheel: Vec<_> = ui.input(|i| {
                 i.events
                     .iter()
                     .filter_map(|e| match e {
-                        // Ctrl+wheel is reserved for zooming.
+                        // Ctrl+wheel is zoom, handled above.
                         Event::MouseWheel {
                             unit,
                             delta,
                             modifiers,
                             ..
-                        } if !modifiers.command => Some((*unit, delta.y)),
+                        } if !modifiers.command => Some((*unit, *delta, modifiers.shift)),
                         _ => None,
                     })
                     .collect()
             });
-            for (unit, dy) in wheel {
-                // A positive delta moves the content down, i.e. scrolls toward the top.
+            for (unit, delta, shift) in wheel {
+                // A positive delta moves the content down/right, i.e. scrolls up/left.
+                let delta = if shift && delta.x == 0.0 {
+                    vec2(delta.y, 0.0) // Shift+wheel scrolls sideways
+                } else {
+                    delta
+                };
                 match unit {
                     // Touchpads send many small, already smooth steps.
-                    MouseWheelUnit::Point => self.scroll.jump_by(-dy / s),
-                    MouseWheelUnit::Line => self.scroll.scroll_by(-dy * WHEEL_STEP / s),
-                    MouseWheelUnit::Page => self.scroll.scroll_by(-dy * view_h * 0.9),
+                    MouseWheelUnit::Point => {
+                        self.camera.x.jump_by(-delta.x / s);
+                        self.camera.y.jump_by(-delta.y / s);
+                    }
+                    MouseWheelUnit::Line => {
+                        self.camera.x.scroll_by(-delta.x * WHEEL_STEP / s);
+                        self.camera.y.scroll_by(-delta.y * WHEEL_STEP / s);
+                    }
+                    MouseWheelUnit::Page => {
+                        self.camera.y.scroll_by(-delta.y * view_h_pt * 0.9);
+                    }
                 }
             }
         }
 
-        let nothing_focused = ui.ctx().memory(|m| m.focused().is_none());
-        if nothing_focused {
-            let page_step = view_h * 0.9;
+        let (max_x, max_y) = self.camera.max_scroll(content, view);
+        if ctx.memory(|m| m.focused().is_none()) {
+            let page_step = view_h_pt * 0.9;
             ui.input(|i| {
-                let mut delta = 0.0;
+                let mut dy = 0.0;
+                let mut dx = 0.0;
                 if i.key_pressed(Key::ArrowDown) {
-                    delta += ARROW_STEP / s;
+                    dy += ARROW_STEP / s;
                 }
                 if i.key_pressed(Key::ArrowUp) {
-                    delta -= ARROW_STEP / s;
+                    dy -= ARROW_STEP / s;
+                }
+                if i.key_pressed(Key::ArrowRight) {
+                    dx += ARROW_STEP / s;
+                }
+                if i.key_pressed(Key::ArrowLeft) {
+                    dx -= ARROW_STEP / s;
                 }
                 if i.key_pressed(Key::PageDown) || (i.key_pressed(Key::Space) && !i.modifiers.shift)
                 {
-                    delta += page_step;
+                    dy += page_step;
                 }
                 if i.key_pressed(Key::PageUp) || (i.key_pressed(Key::Space) && i.modifiers.shift) {
-                    delta -= page_step;
+                    dy -= page_step;
                 }
-                if delta != 0.0 {
-                    self.scroll.scroll_by(delta);
+                if dy != 0.0 {
+                    self.camera.y.scroll_by(dy);
+                }
+                if dx != 0.0 {
+                    self.camera.x.scroll_by(dx);
                 }
                 if i.key_pressed(Key::Home) {
-                    self.scroll.scroll_to(0.0);
+                    self.camera.y.scroll_to(0.0);
                 }
                 if i.key_pressed(Key::End) {
-                    self.scroll.scroll_to(max_scroll);
+                    self.camera.y.scroll_to(max_y);
                 }
             });
         }
 
-        // Scrollbar: drag the thumb, or click the track to jump there.
-        let bar = Rect::from_min_max(
+        let v_bar = Rect::from_min_max(
             pos2(rect.right() - SCROLLBAR_WIDTH, rect.top()),
             rect.right_bottom(),
         );
-        let bar_response = ui.interact(bar, ui.id().with("scrollbar"), Sense::click_and_drag());
-        let total = layout.height().max(view_h);
-        let thumb_h = (rect.height() * view_h / total)
-            .max(32.0)
-            .min(rect.height());
-        let track = rect.height() - thumb_h;
-        if track > 0.0 {
-            if bar_response.dragged() {
-                self.scroll
-                    .jump_by(bar_response.drag_delta().y * max_scroll / track);
-            } else if bar_response.clicked()
-                && let Some(pointer) = bar_response.interact_pointer_pos()
-            {
-                let fraction = ((pointer.y - rect.top() - thumb_h / 2.0) / track).clamp(0.0, 1.0);
-                self.scroll.scroll_to(fraction * max_scroll);
-            }
-        }
+        let v_thumb = scrollbar(
+            ui,
+            v_bar,
+            false,
+            &mut self.camera.y,
+            max_y,
+            view_h_pt / content.1.max(view_h_pt),
+        );
+        let h_bar = Rect::from_min_max(
+            pos2(rect.left(), rect.bottom() - SCROLLBAR_WIDTH),
+            pos2(rect.right() - SCROLLBAR_WIDTH, rect.bottom()),
+        );
+        let h_thumb = (max_x > 0.0).then(|| {
+            let view_w_pt = view.0 / s;
+            scrollbar(
+                ui,
+                h_bar,
+                true,
+                &mut self.camera.x,
+                max_x,
+                view_w_pt / content.0.max(view_w_pt),
+            )
+        });
 
         if let Some(test) = &mut self.auto_scroll
-            && !test.step(dt, &mut self.scroll, max_scroll)
+            && !test.step(dt, &mut self.camera.y, max_y)
         {
             self.auto_scroll = None;
             self.hud.finish_test();
         }
-        self.scroll.clamp(max_scroll);
-        let moving = self.scroll.update(dt);
+        self.camera.clamp(content, view);
+        let moving = self.camera.update(dt);
 
+        // --- Which scale do tiles render at? --------------------------------------------
+        if let Some(wait) = self.settle.update(self.camera.zoom(), ui.input(|i| i.time)) {
+            ctx.request_repaint_after_secs(wait as f32);
+        }
+        let render_scale = Scale::from_zoom(self.settle.render_zoom(), ppp);
+        if self.render_scale != Some(render_scale) {
+            // Keep the previous tiles as a stand-in, unless they never finished loading
+            // (then the older, complete set is the better stand-in).
+            if self.render_complete || self.fallback_scale.is_none() {
+                self.fallback_scale = self.render_scale;
+            }
+            self.render_scale = Some(render_scale);
+            self.render_complete = false;
+        }
+        let display_scale = Scale::from_zoom(self.camera.zoom(), ppp);
+
+        // --- Paint ---------------------------------------------------------------------
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, CANVAS_COLOR);
-        let top = self.scroll.position();
-        let doc_left =
-            (rect.width() - SCROLLBAR_WIDTH) / 2.0 + rect.left() - layout.width() * s / 2.0;
-        // Tiles are rendered at the screen's real pixel density, so they are drawn 1:1.
-        let scale = Scale::from_zoom(self.zoom, ppp);
-        let view_px = (rect.width() * ppp, rect.height() * ppp);
-        let full_uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let s = self.camera.screen_per_pt();
+        let top = self.camera.y.position();
+        let doc_left = rect.left() + self.camera.doc_left_pt(content.0, view.0) * s;
+        let view_px = (view.0 * ppp, view.1 * ppp);
+        let mut missing = 0;
 
         // Pages one screen above and below are prepared too, so scrolling finds them ready.
-        for index in layout.visible(top - view_h, top + 2.0 * view_h) {
+        let layout = &self.document.layout;
+        for index in layout.visible(top - view_h_pt, top + 2.0 * view_h_pt) {
             let slot = layout.slots()[index];
             let size = PageSize {
                 width_pt: slot.width,
                 height_pt: slot.height,
             };
-            let page_px = page_px_size(size, scale);
+            let page_px = page_px_size(size, display_scale);
             let min = pos2(doc_left + slot.x * s, rect.top() + (slot.y - top) * s);
             let page = snap_to_pixels(
                 Rect::from_min_size(min, vec2(page_px.0 as f32, page_px.1 as f32) / ppp),
                 ppp,
             );
             let on_screen = page.intersects(rect);
-            // Lower numbers render first: previews of visible pages, then their sharp tiles,
-            // then the same for the pages around them.
-            let (preview_priority, tile_priority) = if on_screen {
-                (0, 1_000)
-            } else {
-                (10_000, 20_000)
-            };
             if on_screen {
                 painter.rect_filled(
                     page.translate(vec2(0.0, 1.0)).expand(1.0),
@@ -324,18 +477,23 @@ impl ViewerApp {
                         page.center(),
                         Align2::CENTER_CENTER,
                         (index + 1).to_string(),
-                        FontId::proportional(48.0),
+                        FontId::proportional(48.0 * s / 1.333),
                         Color32::from_gray(210),
                     );
                 }
                 continue;
             };
-            let page_index = index as u32;
-            let distance = (index as i64 - self.current_page as i64).unsigned_abs() as u32;
-
+            // Lower numbers render first: previews of visible pages, then their sharp tiles,
+            // then the same for the pages around them.
+            let (preview_priority, tile_priority) = if on_screen {
+                (0, 1_000)
+            } else {
+                (10_000, 20_000)
+            };
+            let distance = index.abs_diff(self.current_page) as u32;
             let preview = TileKey {
                 doc,
-                page: page_index,
+                page: index as u32,
                 scale: Scale::from_px_per_pt(preview_px_per_pt(slot.width, slot.height)),
                 tx: 0,
                 ty: 0,
@@ -343,63 +501,45 @@ impl ViewerApp {
             if let Some(texture) = self.tiles.get(preview, preview_priority + distance)
                 && on_screen
             {
-                painter.image(texture.id(), page, full_uv, Color32::WHITE);
+                painter.image(texture.id(), page, FULL_UV, Color32::WHITE);
             }
 
-            // Sharp tiles for the part of the page inside the extended view.
-            let origin = (
-                (page.min.x - rect.left()) * ppp,
-                (page.min.y - rect.top()) * ppp,
-            );
-            let extended = (origin.0, origin.1 + view_px.1);
-            let (cols, rows) = visible_tiles(page_px, extended, (view_px.0, view_px.1 * 3.0));
-            let center = (view_px.0 / 2.0, view_px.1 / 2.0);
-            for ty in rows {
-                for tx in cols.clone() {
-                    let Some(r) = tile_rect(page_px, tx, ty) else {
-                        continue;
-                    };
-                    let tile_min = page.min + vec2(r.x as f32, r.y as f32) / ppp;
-                    let tile_screen =
-                        Rect::from_min_size(tile_min, vec2(r.width as f32, r.height as f32) / ppp);
-                    let dx = origin.0 + (r.x + r.width / 2) as f32 - center.0;
-                    let dy = origin.1 + (r.y + r.height / 2) as f32 - center.1;
-                    let tiles_away = (dx.abs() + dy.abs()) / TILE_SIZE as f32;
-                    let key = TileKey {
+            let mut draw = |scale: Scale, priority: Option<u32>| {
+                draw_page_tiles(
+                    &mut self.tiles,
+                    &painter,
+                    PageTiles {
                         doc,
-                        page: page_index,
+                        page: index as u32,
+                        size,
+                        page_rect: page,
+                        viewport: rect,
+                        ppp,
+                        view_px,
                         scale,
-                        tx,
-                        ty,
-                    };
-                    if let Some(texture) = self.tiles.get(key, tile_priority + tiles_away as u32)
-                        && tile_screen.intersects(rect)
-                    {
-                        painter.image(texture.id(), tile_screen, full_uv, Color32::WHITE);
-                    }
-                }
+                        priority,
+                    },
+                )
+            };
+            if let Some(fallback) = self.fallback_scale
+                && fallback != render_scale
+            {
+                draw(fallback, None);
             }
+            missing += draw(render_scale, Some(tile_priority));
         }
-        self.current_page = layout.page_at(top + view_h / 2.0);
+        self.current_page = layout.page_at(top + view_h_pt / 2.0);
+        if missing == 0 && self.document.id.is_some() {
+            self.render_complete = true;
+            self.fallback_scale = None;
+        }
 
-        let thumb_top = if max_scroll > 0.0 {
-            rect.top() + track * top / max_scroll
-        } else {
-            rect.top()
-        };
-        painter.rect_filled(bar, 0.0, Color32::from_black_alpha(40));
-        let thumb = Rect::from_min_size(
-            pos2(bar.left() + 2.0, thumb_top + 2.0),
-            vec2(SCROLLBAR_WIDTH - 4.0, thumb_h - 4.0),
-        );
-        let thumb_color = if bar_response.hovered() || bar_response.dragged() {
-            Color32::from_gray(215)
-        } else {
-            Color32::from_gray(160)
-        };
-        painter.rect_filled(thumb, 4.0, thumb_color);
+        paint_scrollbar(&painter, v_bar, v_thumb);
+        if let Some(thumb) = h_thumb {
+            paint_scrollbar(&painter, h_bar, thumb);
+        }
 
-        moving
+        moving || zooming
     }
 }
 
@@ -413,6 +553,19 @@ impl eframe::App for ViewerApp {
         }
 
         let (mut open_dialog, toggle_hud) = ctx.input_mut(|i| {
+            let zoom_keys = [
+                (Key::Equals, ZoomCommand::StepIn),
+                (Key::Plus, ZoomCommand::StepIn),
+                (Key::Minus, ZoomCommand::StepOut),
+                (Key::Num0, ZoomCommand::Fit(Fit::Page)),
+                (Key::Num1, ZoomCommand::Set(100.0)),
+                (Key::Num2, ZoomCommand::Fit(Fit::Width)),
+            ];
+            for (key, command) in zoom_keys {
+                if i.consume_key(Modifiers::COMMAND, key) {
+                    self.zoom_command = Some(command);
+                }
+            }
             (
                 i.consume_key(Modifiers::COMMAND, Key::O),
                 i.consume_key(Modifiers::NONE, Key::F3),
@@ -443,7 +596,7 @@ impl eframe::App for ViewerApp {
             self.hud
                 .show(&ctx, self.auto_scroll.is_some(), &tile_status)
         {
-            let speed = SCROLL_TEST_SPEED / self.screen_per_pt();
+            let speed = SCROLL_TEST_SPEED / self.camera.screen_per_pt();
             self.auto_scroll = Some(AutoScroll::new(SCROLL_TEST_SECONDS, speed));
             self.hud.start_test();
         }
@@ -469,6 +622,146 @@ impl eframe::App for ViewerApp {
             ctx.request_repaint();
         }
     }
+}
+
+const FULL_UV: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+
+/// One page's tiles at one scale, to draw into `page_rect` on screen.
+struct PageTiles {
+    doc: DocId,
+    page: u32,
+    size: PageSize,
+    page_rect: Rect,
+    viewport: Rect,
+    ppp: f32,
+    view_px: (f32, f32),
+    scale: Scale,
+    /// `Some` requests missing tiles with this base priority; `None` only draws cached ones.
+    priority: Option<u32>,
+}
+
+/// Draws the cached tiles of a page at `scale`, stretched to the page's current size on
+/// screen (1:1 when the zoom has settled), and requests missing ones. Returns how many
+/// tiles on screen are still missing.
+fn draw_page_tiles(tiles: &mut TileManager, painter: &Painter, p: PageTiles) -> usize {
+    let page_px = page_px_size(p.size, p.scale);
+    // Tile pixels per screen pixel: 1.0 once the zoom has settled.
+    let k = page_px.0 as f32 / (p.page_rect.width() * p.ppp);
+    let origin = (
+        (p.page_rect.left() - p.viewport.left()) * p.ppp * k,
+        (p.page_rect.top() - p.viewport.top()) * p.ppp * k,
+    );
+    let view = (p.view_px.0 * k, p.view_px.1 * k);
+    let (cols, rows) = if p.priority.is_some() {
+        // Also the screen above and below, to prefetch.
+        visible_tiles(
+            page_px,
+            (origin.0, origin.1 + view.1),
+            (view.0, view.1 * 3.0),
+        )
+    } else {
+        visible_tiles(page_px, origin, view)
+    };
+    let to_screen = 1.0 / (k * p.ppp);
+    let mut missing = 0;
+    for ty in rows {
+        for tx in cols.clone() {
+            let Some(r) = tile_rect(page_px, tx, ty) else {
+                continue;
+            };
+            let screen = Rect::from_min_size(
+                p.page_rect.min + vec2(r.x as f32, r.y as f32) * to_screen,
+                vec2(r.width as f32, r.height as f32) * to_screen,
+            );
+            let key = TileKey {
+                doc: p.doc,
+                page: p.page,
+                scale: p.scale,
+                tx,
+                ty,
+            };
+            let texture = match p.priority {
+                Some(base) => {
+                    let dx = origin.0 + (r.x + r.width / 2) as f32 - view.0 / 2.0;
+                    let dy = origin.1 + (r.y + r.height / 2) as f32 - view.1 / 2.0;
+                    let tiles_away = ((dx.abs() + dy.abs()) / TILE_SIZE as f32) as u32;
+                    tiles.get(key, base + tiles_away)
+                }
+                None => tiles.peek(key),
+            };
+            let visible = screen.intersects(p.viewport);
+            match texture {
+                Some(texture) if visible => {
+                    painter.image(texture.id(), screen, FULL_UV, Color32::WHITE);
+                }
+                None if visible => missing += 1,
+                _ => {}
+            }
+        }
+    }
+    missing
+}
+
+/// Handles dragging the thumb and clicking the track of a scrollbar. Returns the thumb's
+/// rectangle and whether it is hovered, for painting.
+fn scrollbar(
+    ui: &mut egui::Ui,
+    bar: Rect,
+    horizontal: bool,
+    scroll: &mut SmoothScroll,
+    max: f32,
+    visible_fraction: f32,
+) -> (Rect, bool) {
+    let response = ui.interact(
+        bar,
+        ui.id().with(("scrollbar", horizontal)),
+        Sense::click_and_drag(),
+    );
+    let length = if horizontal {
+        bar.width()
+    } else {
+        bar.height()
+    };
+    let thumb_len = (length * visible_fraction).max(32.0).min(length);
+    let track = length - thumb_len;
+    if track > 0.0 && max > 0.0 {
+        let along = |v: Vec2| if horizontal { v.x } else { v.y };
+        if response.dragged() {
+            scroll.jump_by(along(response.drag_delta()) * max / track);
+        } else if response.clicked()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            let start = along(pointer - bar.min) - thumb_len / 2.0;
+            scroll.scroll_to((start / track).clamp(0.0, 1.0) * max);
+        }
+    }
+    let offset = if max > 0.0 {
+        track * (scroll.position() / max).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let thumb = if horizontal {
+        Rect::from_min_size(
+            pos2(bar.left() + offset + 2.0, bar.top() + 2.0),
+            vec2(thumb_len - 4.0, SCROLLBAR_WIDTH - 4.0),
+        )
+    } else {
+        Rect::from_min_size(
+            pos2(bar.left() + 2.0, bar.top() + offset + 2.0),
+            vec2(SCROLLBAR_WIDTH - 4.0, thumb_len - 4.0),
+        )
+    };
+    (thumb, response.hovered() || response.dragged())
+}
+
+fn paint_scrollbar(painter: &Painter, bar: Rect, (thumb, active): (Rect, bool)) {
+    painter.rect_filled(bar, 0.0, Color32::from_black_alpha(40));
+    let color = if active {
+        Color32::from_gray(215)
+    } else {
+        Color32::from_gray(160)
+    };
+    painter.rect_filled(thumb, 4.0, color);
 }
 
 /// Rounds a rectangle's corners to whole physical pixels so page edges stay sharp.

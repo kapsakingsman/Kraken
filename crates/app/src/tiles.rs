@@ -87,6 +87,11 @@ impl TileManager {
         None
     }
 
+    /// Returns the tile's texture if it is already cached, without requesting it.
+    pub fn peek(&mut self, key: TileKey) -> Option<TextureHandle> {
+        self.cache.get(&key).cloned()
+    }
+
     /// Sends this frame's requests. When the set of wanted tiles changed (the view
     /// scrolled), the engine drops queued tiles nobody is waiting for any more.
     pub fn end_frame(&mut self, engine: &Engine) {
