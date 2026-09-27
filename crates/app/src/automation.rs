@@ -389,6 +389,13 @@ impl Automation {
             ctx.request_repaint_after(Duration::from_secs_f32(left.max(0.0) + 0.01));
             // Frames during idle are unexpected; the next one ends the phase.
             self.last_frame = None;
+            // The frame that started the phase is still being drawn (with software
+            // rendering that takes up to a second); idling starts after it.
+            if let Some(entry) = self.phase_log.last_mut()
+                && entry.get("quiet_from_unix_ms").is_none()
+            {
+                entry["quiet_from_unix_ms"] = json!(unix_ms());
+            }
         }
 
         if self.finished || self.failure.is_some() {
