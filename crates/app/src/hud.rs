@@ -67,7 +67,7 @@ impl Hud {
         self.last_test = self.test.take().and_then(|t| t.summary());
     }
 
-    pub fn show(&self, ctx: &egui::Context, test_running: bool) -> HudAction {
+    pub fn show(&self, ctx: &egui::Context, test_running: bool, tiles: &str) -> HudAction {
         if !self.visible {
             return HudAction::None;
         }
@@ -89,6 +89,7 @@ impl Hud {
                                 ui.label("something moves are counted.");
                             }
                         }
+                        ui.label(RichText::new(tiles).monospace());
                         ui.separator();
                         if test_running {
                             ui.label("Scroll test running...");

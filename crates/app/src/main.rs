@@ -3,6 +3,7 @@
 
 mod app;
 mod hud;
+mod tiles;
 
 use std::path::PathBuf;
 

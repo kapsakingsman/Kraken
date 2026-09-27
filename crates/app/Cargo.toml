@@ -6,8 +6,10 @@ rust-version.workspace = true
 description = "Kraken PDF desktop app."
 
 [dependencies]
+bytemuck = { version = "1.25.2", features = ["extern_crate_alloc"] }
 crossbeam-channel = "0.5.17"
 eframe = "0.36.2"
+egui = { version = "0.36.2", default-features = false, features = ["bytemuck"] }
 pdf-engine = { path = "../engine" }
 pdf-view = { path = "../view" }
 rfd = "0.17.2"

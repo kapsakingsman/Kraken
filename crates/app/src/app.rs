@@ -9,10 +9,12 @@ use eframe::egui::{
     self, Align, Align2, Color32, Event, FontId, Key, Layout, Modifiers, MouseWheelUnit, Rect,
     RichText, Sense, pos2, vec2,
 };
-use pdf_engine::{DocId, DocInfo, Engine, EngineConfig, PageSize};
-use pdf_view::{AutoScroll, DocLayout, SCREEN_PER_PT_AT_100, SmoothScroll};
+use pdf_engine::geometry::{page_px_size, tile_rect};
+use pdf_engine::{DocId, DocInfo, Engine, EngineConfig, PageSize, Scale, TILE_SIZE, TileKey};
+use pdf_view::{AutoScroll, DocLayout, SCREEN_PER_PT_AT_100, SmoothScroll, visible_tiles};
 
 use crate::hud::{Hud, HudAction};
+use crate::tiles::{TileManager, preview_px_per_pt};
 
 /// Screen points scrolled per mouse-wheel notch.
 const WHEEL_STEP: f32 = 100.0;
@@ -41,6 +43,7 @@ pub struct ViewerApp {
     zoom: f32,
     current_page: usize,
     hud: Hud,
+    tiles: TileManager,
     auto_scroll: Option<AutoScroll>,
     opening: Option<Receiver<OpenResult>>,
     message: Option<String>,
@@ -51,7 +54,14 @@ pub struct ViewerApp {
 
 impl ViewerApp {
     pub fn new(cc: &eframe::CreationContext, path: Option<PathBuf>) -> Self {
-        let engine = Engine::start(EngineConfig::default())
+        let ctx = cc.egui_ctx.clone();
+        let config = EngineConfig {
+            // Enough parsed pages for everything on screen plus the pages prefetched around it.
+            page_cache: 16,
+            ..EngineConfig::default()
+        };
+        // Every finished tile wakes the UI, so it appears without waiting for input.
+        let engine = Engine::start_with_waker(config, move || ctx.request_repaint())
             .map(Arc::new)
             .map_err(|e| e.to_string());
         let mut app = ViewerApp {
@@ -62,6 +72,7 @@ impl ViewerApp {
             zoom: 100.0,
             current_page: 0,
             hud: Hud::new(),
+            tiles: TileManager::new(),
             auto_scroll: None,
             opening: None,
             smoke_frames_left: std::env::var("KRAKEN_SMOKE_TEST_FRAMES")
@@ -129,6 +140,7 @@ impl ViewerApp {
                     |n| n.to_string_lossy().into_owned(),
                 );
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{name} - Kraken PDF")));
+                self.tiles.clear();
                 self.document = Document {
                     name,
                     id: Some(info.id),
@@ -271,28 +283,102 @@ impl ViewerApp {
         let top = self.scroll.position();
         let doc_left =
             (rect.width() - SCROLLBAR_WIDTH) / 2.0 + rect.left() - layout.width() * s / 2.0;
-        for index in layout.visible(top, top + view_h) {
+        // Tiles are rendered at the screen's real pixel density, so they are drawn 1:1.
+        let scale = Scale::from_zoom(self.zoom, ppp);
+        let view_px = (rect.width() * ppp, rect.height() * ppp);
+        let full_uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+
+        // Pages one screen above and below are prepared too, so scrolling finds them ready.
+        for index in layout.visible(top - view_h, top + 2.0 * view_h) {
             let slot = layout.slots()[index];
+            let size = PageSize {
+                width_pt: slot.width,
+                height_pt: slot.height,
+            };
+            let page_px = page_px_size(size, scale);
+            let min = pos2(doc_left + slot.x * s, rect.top() + (slot.y - top) * s);
             let page = snap_to_pixels(
-                Rect::from_min_size(
-                    pos2(doc_left + slot.x * s, rect.top() + (slot.y - top) * s),
-                    vec2(slot.width * s, slot.height * s),
-                ),
+                Rect::from_min_size(min, vec2(page_px.0 as f32, page_px.1 as f32) / ppp),
                 ppp,
             );
-            painter.rect_filled(
-                page.translate(vec2(0.0, 1.0)).expand(1.0),
-                1.0,
-                Color32::from_black_alpha(70),
+            let on_screen = page.intersects(rect);
+            // Lower numbers render first: previews of visible pages, then their sharp tiles,
+            // then the same for the pages around them.
+            let (preview_priority, tile_priority) = if on_screen {
+                (0, 1_000)
+            } else {
+                (10_000, 20_000)
+            };
+            if on_screen {
+                painter.rect_filled(
+                    page.translate(vec2(0.0, 1.0)).expand(1.0),
+                    1.0,
+                    Color32::from_black_alpha(70),
+                );
+                painter.rect_filled(page, 0.0, Color32::WHITE);
+            }
+
+            let Some(doc) = self.document.id else {
+                if on_screen {
+                    painter.text(
+                        page.center(),
+                        Align2::CENTER_CENTER,
+                        (index + 1).to_string(),
+                        FontId::proportional(48.0),
+                        Color32::from_gray(210),
+                    );
+                }
+                continue;
+            };
+            let page_index = index as u32;
+            let distance = (index as i64 - self.current_page as i64).unsigned_abs() as u32;
+
+            let preview = TileKey {
+                doc,
+                page: page_index,
+                scale: Scale::from_px_per_pt(preview_px_per_pt(slot.width, slot.height)),
+                tx: 0,
+                ty: 0,
+            };
+            if let Some(texture) = self.tiles.get(preview, preview_priority + distance)
+                && on_screen
+            {
+                painter.image(texture.id(), page, full_uv, Color32::WHITE);
+            }
+
+            // Sharp tiles for the part of the page inside the extended view.
+            let origin = (
+                (page.min.x - rect.left()) * ppp,
+                (page.min.y - rect.top()) * ppp,
             );
-            painter.rect_filled(page, 0.0, Color32::WHITE);
-            painter.text(
-                page.center(),
-                Align2::CENTER_CENTER,
-                (index + 1).to_string(),
-                FontId::proportional(48.0),
-                Color32::from_gray(210),
-            );
+            let extended = (origin.0, origin.1 + view_px.1);
+            let (cols, rows) = visible_tiles(page_px, extended, (view_px.0, view_px.1 * 3.0));
+            let center = (view_px.0 / 2.0, view_px.1 / 2.0);
+            for ty in rows {
+                for tx in cols.clone() {
+                    let Some(r) = tile_rect(page_px, tx, ty) else {
+                        continue;
+                    };
+                    let tile_min = page.min + vec2(r.x as f32, r.y as f32) / ppp;
+                    let tile_screen =
+                        Rect::from_min_size(tile_min, vec2(r.width as f32, r.height as f32) / ppp);
+                    let dx = origin.0 + (r.x + r.width / 2) as f32 - center.0;
+                    let dy = origin.1 + (r.y + r.height / 2) as f32 - center.1;
+                    let tiles_away = (dx.abs() + dy.abs()) / TILE_SIZE as f32;
+                    let key = TileKey {
+                        doc,
+                        page: page_index,
+                        scale,
+                        tx,
+                        ty,
+                    };
+                    if let Some(texture) = self.tiles.get(key, tile_priority + tiles_away as u32)
+                        && tile_screen.intersects(rect)
+                    {
+                        painter.image(texture.id(), tile_screen, full_uv, Color32::WHITE);
+                    }
+                }
+            }
         }
         self.current_page = layout.page_at(top + view_h / 2.0);
 
@@ -322,6 +408,9 @@ impl eframe::App for ViewerApp {
         self.hud.begin_frame(frame.info().cpu_usage);
         let ctx = ui.ctx().clone();
         self.receive_opened(&ctx);
+        if let Ok(engine) = &self.engine {
+            self.tiles.begin_frame(engine, &ctx);
+        }
 
         let (mut open_dialog, toggle_hud) = ctx.input_mut(|i| {
             (
@@ -345,7 +434,15 @@ impl eframe::App for ViewerApp {
             .show(ui, |ui| self.canvas(ui))
             .inner;
 
-        if let HudAction::RunScrollTest = self.hud.show(&ctx, self.auto_scroll.is_some()) {
+        if let Ok(engine) = &self.engine {
+            self.tiles.end_frame(engine);
+        }
+
+        let tile_status = self.tiles.status();
+        if let HudAction::RunScrollTest =
+            self.hud
+                .show(&ctx, self.auto_scroll.is_some(), &tile_status)
+        {
             let speed = SCROLL_TEST_SPEED / self.screen_per_pt();
             self.auto_scroll = Some(AutoScroll::new(SCROLL_TEST_SECONDS, speed));
             self.hud.start_test();
@@ -368,7 +465,7 @@ impl eframe::App for ViewerApp {
 
         let animating = moving || self.auto_scroll.is_some();
         self.hud.end_frame(animating);
-        if animating {
+        if animating || self.tiles.is_busy() {
             ctx.request_repaint();
         }
     }

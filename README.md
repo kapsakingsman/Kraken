@@ -5,8 +5,8 @@ A fast PDF reader and editor for Windows, written in Rust on top of PDFium.
 Goals, in order: Acrobat-level sharp rendering, smooth scrolling and zooming at up to 144 Hz,
 then annotations, forms and signing. See [docs/ROADMAP.md](docs/ROADMAP.md) for the stages.
 
-**Current stage:** 2, a window that scrolls smoothly at up to 144 Hz with a frame timing
-display. Pages are still blank placeholders; their content appears in stage 3.
+**Current stage:** 3, continuous scrolling through real page content at up to 144 Hz.
+Zooming comes in stage 4 (the view is fixed at 100%).
 
 ## Setup (Windows 11)
 
@@ -41,7 +41,11 @@ on the window.
 | Arrow keys, Page Up/Down, Space, Shift+Space | Scroll |
 | Home / End | First / last page |
 | Scrollbar | Drag the thumb, or click the track |
-| F3 | Show or hide the frame timing HUD |
+| F3 | Show or hide the frame timing HUD (also shows tile cache use) |
+
+While a page's sharp tiles render, a low-resolution preview of it is shown, so pages never
+flash blank during normal scrolling. Tiles are rendered at your screen's real pixel density
+and drawn 1:1, so the page on screen is pixel-for-pixel what `pdf-cli render` produces.
 
 ### Checking 144 Hz smoothness
 
