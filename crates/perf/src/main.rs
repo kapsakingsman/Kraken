@@ -38,7 +38,7 @@ struct Args {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "startup,scroll,zoom,sharpen,wheel,idle,tour,soak"
+        default_value = "startup,scroll,zoom,sharpen,wheel,spin,idle,tour,soak"
     )]
     scenarios: Vec<String>,
 
@@ -478,20 +478,23 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
             _ => {}
         }
     }
-    if scenario == "sharpen" || scenario == "wheel" {
+    if matches!(scenario, "sharpen" | "wheel" | "spin") {
         let times: Vec<f64> = report["sharpen_ms"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_f64)
             .collect();
-        let (what, key) = if scenario == "sharpen" {
-            ("Zoom stop to sharp (ms), one per gesture", "after_zoom")
-        } else {
-            (
+        let (what, key) = match scenario {
+            "sharpen" => ("Zoom stop to sharp (ms), one per gesture", "after_zoom"),
+            "wheel" => (
                 "Ctrl+wheel notch to sharp (ms), one per notch",
                 "after_notch",
-            )
+            ),
+            _ => (
+                "Last notch of a spin to sharp (ms), one per spin",
+                "after_spin",
+            ),
         };
         ctx.report.notes.push(format!(
             "{what}: {}",
@@ -507,6 +510,40 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
             "ms",
         );
         ctx.add(&format!("app.{scenario}.{key}_max_ms"), max(&times), "ms");
+
+        // The cost of zooming: work done from the first gesture to the last sharp view.
+        let phases = report["phases"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let from = phases.first().and_then(|p| p["start_unix_ms"].as_f64());
+        let to = phases.last().and_then(|p| p["end_unix_ms"].as_f64());
+        if let (Some(from), Some(to)) = (from, to) {
+            let interval = SAMPLE_EVERY.as_secs_f64() * 1000.0;
+            let cpu_s: f64 = samples
+                .iter()
+                .filter(|s| s.unix_ms > from && s.unix_ms - interval < to + interval)
+                .map(|s| s.cpu_pct / 100.0 * SAMPLE_EVERY.as_secs_f64())
+                .sum();
+            ctx.add(&format!("app.{scenario}.cpu_seconds"), cpu_s, "s");
+        }
+        let tiles = &report["tiles"];
+        ctx.add(
+            &format!("app.{scenario}.tiles_rendered"),
+            tiles["rendered"].as_f64().unwrap_or(0.0),
+            "tiles",
+        );
+        ctx.add(
+            &format!("app.{scenario}.tiles_discarded"),
+            tiles["discarded"].as_f64().unwrap_or(0.0),
+            "tiles",
+        );
+        ctx.add(
+            &format!("app.{scenario}.tile_cache_peak_mb"),
+            tiles["peak_cache_mb"].as_f64().unwrap_or(0.0),
+            "MB",
+        );
+        ctx.add(&format!("app.{scenario}.peak_rss_mb"), max(&rss), "MB");
     }
     if let (Some(first), Some(last)) = (soak_peaks.first(), soak_peaks.last()) {
         let peaks: Vec<String> = soak_peaks.iter().map(|p| format!("{p:.0}")).collect();

@@ -4,7 +4,7 @@
 //! it. The `perf-runner` tool (crates/perf) starts the app with:
 //!
 //! - `KRAKEN_AUTOMATION`: the scenario name (`startup`, `scroll`, `zoom`, `idle`, `tour`,
-//!   `soak`, `sharpen`, `wheel`, `smoke`),
+//!   `soak`, `sharpen`, `wheel`, `spin`, `smoke`),
 //! - `KRAKEN_PERF_REPORT`: where to write the JSON report,
 //!
 //! and measures CPU and memory of the process from outside while it runs.
@@ -48,7 +48,13 @@ enum Action {
     /// Real Ctrl+mouse-wheel input: this many notches (negative zooms out) in one frame over
     /// the middle of the window, then wait until the view is sharp again.
     WheelNotches(i32),
+    /// A fast wheel spin: `count` notches in this direction, one every [`SPIN_INTERVAL`]
+    /// seconds, then wait until the view is sharp again.
+    WheelSpin { notches: i32, count: u32 },
 }
+
+/// Time between notches in [`Action::WheelSpin`]: about 16 notches per second, a quick flick.
+const SPIN_INTERVAL: f32 = 0.06;
 
 /// Length of the zoom gesture in [`Action::ZoomTo`].
 const GESTURE_SECONDS: f32 = 0.4;
@@ -95,6 +101,12 @@ fn scenario(name: &str) -> Option<Vec<Phase>> {
             .into_iter()
             .map(|notches| phase("wheel", 10.0, Action::WheelNotches(notches)))
             .collect(),
+        // Fast Ctrl+wheel spins in and out: time from the last notch to a sharp view, and the
+        // tiles rendered for zoom steps that were only passed through.
+        "spin" => [1, -1, 1, -1]
+            .into_iter()
+            .map(|notches| phase("spin", 10.0, Action::WheelSpin { notches, count: 8 }))
+            .collect(),
         "smoke" => vec![
             phase("scroll", 2.0, Action::Scroll(2400.0)),
             phase("zoom", 6.0, Action::ZoomSweep),
@@ -119,6 +131,9 @@ pub struct Automation {
     sharpen_ms: Vec<f64>,
     /// Wheel notches to send with the next frame's input.
     pending_wheel: Option<i32>,
+    /// Notches sent so far in the current [`Action::WheelSpin`], and when the last one was.
+    spin_sent: u32,
+    spin_last: Option<Instant>,
     current: usize,
     phase_started: Option<Instant>,
     phase_log: Vec<serde_json::Value>,
@@ -162,6 +177,8 @@ impl Automation {
             gesture_end: None,
             sharpen_ms: Vec::new(),
             pending_wheel: None,
+            spin_sent: 0,
+            spin_last: None,
             current: 0,
             phase_started: None,
             phase_log: Vec::new(),
@@ -272,11 +289,32 @@ impl Automation {
                     done = true;
                 }
             }
+            Action::WheelSpin { notches, count } => {
+                let due = self
+                    .spin_last
+                    .is_none_or(|last| last.elapsed().as_secs_f32() >= SPIN_INTERVAL);
+                if self.spin_sent < count {
+                    if due {
+                        self.pending_wheel = Some(notches);
+                        self.spin_sent += 1;
+                        self.spin_last = Some(Instant::now());
+                    }
+                } else if self.pending_wheel.is_none()
+                    && state.zoom_settled
+                    && state.render_complete
+                    && let Some(last) = self.spin_last
+                {
+                    self.sharpen_ms.push(last.elapsed().as_secs_f64() * 1000.0);
+                    done = true;
+                }
+            }
         }
 
         if done {
             self.gesture_start_zoom = None;
             self.gesture_end = None;
+            self.spin_sent = 0;
+            self.spin_last = None;
             if let Some(entry) = self.phase_log.last_mut() {
                 entry["end_unix_ms"] = json!(unix_ms());
                 entry["seconds"] = json!(elapsed);
