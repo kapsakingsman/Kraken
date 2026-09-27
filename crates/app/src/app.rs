@@ -781,7 +781,14 @@ impl eframe::App for ViewerApp {
         #[cfg(feature = "automation")]
         if let Some(automation) = &mut self.automation {
             let workers = self.engine.as_ref().map(|e| e.status()).unwrap_or_default();
-            automation.end_frame(&ctx, frame.info().cpu_usage, self.tiles.stats(), &workers);
+            let gpu = frame.wgpu_render_state().map(|state| &state.device);
+            automation.end_frame(
+                &ctx,
+                frame.info().cpu_usage,
+                self.tiles.stats(),
+                &workers,
+                gpu,
+            );
         }
 
         let animating = moving || self.auto_scroll.is_some();

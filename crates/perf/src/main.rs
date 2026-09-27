@@ -457,8 +457,9 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
         // whole interval lies inside the phase belong to it.
         let interval = SAMPLE_EVERY.as_secs_f64() * 1000.0;
         let (from, to) = if name == "idle" {
-            // From a moment after the app's last frame (which, with software rendering, can
-            // keep the CPU busy for up to a second after the phase began).
+            // From a moment after the GPU finished the app's last frame (with software
+            // rendering that work keeps the CPU busy for up to a second after the phase
+            // began); the app reports when that was.
             let quiet = phase["quiet_from_unix_ms"].as_f64().unwrap_or(start);
             (start.max(quiet) + IDLE_GRACE_MS, end - IDLE_TAIL_MS)
         } else {

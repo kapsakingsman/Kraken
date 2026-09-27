@@ -140,6 +140,9 @@ pub struct Automation {
     workers: pdf_engine::PoolStatus,
     /// CPU time per thread during the idle window, filled in by a measuring thread.
     idle_threads: Arc<Mutex<Option<ThreadTimes>>>,
+    /// When the GPU finished the work of the frame that started the idle phase (Unix ms),
+    /// filled in by the same thread.
+    gpu_quiet_unix_ms: Arc<Mutex<Option<f64>>>,
     /// Wheel notches to send with the next frame's input.
     pending_wheel: Option<i32>,
     /// Notches sent so far in the current [`Action::WheelSpin`], and when the last one was.
@@ -190,6 +193,7 @@ impl Automation {
             sharpen_ms: Vec::new(),
             pending_wheel: None,
             idle_threads: Arc::default(),
+            gpu_quiet_unix_ms: Arc::default(),
             peak_workers: 0,
             workers: pdf_engine::PoolStatus::default(),
             spin_sent: 0,
@@ -334,6 +338,15 @@ impl Automation {
                 entry["end_unix_ms"] = json!(unix_ms());
                 entry["seconds"] = json!(elapsed);
                 if matches!(phase.action, Action::Idle)
+                    && let Some(quiet) = self
+                        .gpu_quiet_unix_ms
+                        .lock()
+                        .ok()
+                        .and_then(|mut q| q.take())
+                {
+                    entry["quiet_from_unix_ms"] = json!(quiet);
+                }
+                if matches!(phase.action, Action::Idle)
                     && let Some(busy) = self.idle_threads.lock().ok().and_then(|mut r| r.take())
                 {
                     entry["threads"] = json!(
@@ -379,6 +392,7 @@ impl Automation {
         cpu_usage_s: Option<f32>,
         tiles: &TileStats,
         workers: &pdf_engine::PoolStatus,
+        gpu: Option<&eframe::wgpu::Device>,
     ) {
         self.peak_workers = self.peak_workers.max(workers.helpers);
         self.workers = workers.clone();
@@ -405,22 +419,38 @@ impl Automation {
             ctx.request_repaint_after(Duration::from_secs_f32(left.max(0.0) + 0.01));
             // Frames during idle are unexpected; the next one ends the phase.
             self.last_frame = None;
-            // The frame that started the phase is still being drawn (with software
-            // rendering that takes up to a second); idling starts after it.
+            // The frame that started the phase is still being drawn: it is submitted to
+            // the GPU after this call, and with software rendering (WARP on the CI runners)
+            // the GPU's work runs on CPU threads for up to a second. Idling starts once the
+            // GPU has finished it.
             if let Some(entry) = self.phase_log.last_mut()
                 && entry.get("quiet_from_unix_ms").is_none()
             {
                 entry["quiet_from_unix_ms"] = json!(unix_ms());
                 // Which threads use CPU while idle. perf-runner measures from 1 s after
-                // this frame to 0.5 s before the phase ends; the readings are taken just
-                // outside that window (0.75 s and 0.25 s) so reading the thread times,
+                // the GPU went quiet to 0.5 s before the phase ends; the readings are taken
+                // just outside that window (0.75 s and 0.25 s) so reading the thread times,
                 // which costs a little CPU itself, does not count as idle CPU.
-                let window = Duration::from_secs_f32((left - 1.0).max(0.5));
+                let phase_end = Instant::now() + Duration::from_secs_f32(left.max(0.0));
+                let device = gpu.cloned();
+                let quiet = Arc::clone(&self.gpu_quiet_unix_ms);
                 let result = Arc::clone(&self.idle_threads);
                 std::thread::spawn(move || {
+                    if let Some(device) = device {
+                        // Give the frame time to be submitted, then wait for the GPU.
+                        std::thread::sleep(Duration::from_millis(100));
+                        let _ = device.poll(eframe::wgpu::PollType::wait_indefinitely());
+                        if let Ok(mut quiet) = quiet.lock() {
+                            *quiet = Some(unix_ms());
+                        }
+                    }
                     std::thread::sleep(Duration::from_millis(750));
                     let before = crate::threads::cpu_times();
-                    std::thread::sleep(window);
+                    let until = phase_end.checked_sub(Duration::from_millis(250));
+                    let window = until.map_or(Duration::ZERO, |u| {
+                        u.saturating_duration_since(Instant::now())
+                    });
+                    std::thread::sleep(window.max(Duration::from_millis(250)));
                     let busy = crate::threads::busy_between(&before, &crate::threads::cpu_times());
                     if let Ok(mut result) = result.lock() {
                         *result = Some(busy);
