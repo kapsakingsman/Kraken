@@ -36,18 +36,20 @@ with `--render-worker`, each with its own PDFium, talking over stdin/stdout
 
 | Rule | Value |
 |---|---|
-| Which tiles go to helpers | Only tiles of *slow* pages: a tile of the page took ≥ 25 ms. Sending a tile over costs 1–2 ms, so ordinary pages (1–10 ms per tile) never leave the process |
+| Which tiles go to helpers | Only tiles of *slow* pages: a tile of the page took ≥ 25 ms, noticed while that tile is still rendering. Sending a tile over costs 1–2 ms, so ordinary pages (1–10 ms per tile) never leave the process |
+| Tile size | 512 px; 256 px on slow pages, so a dense area splits over several processes |
 | How many helpers work | As many as the waiting slow work needs to finish in ~150 ms |
 | Most renderers | min(CPU cores − 1, 4), the app included; 2 on battery; only the app when less than 1 GB of memory is free |
 | When helpers start | Once the first page is on screen (they must not slow down startup), or when slow work needs them |
 | Priority | Below normal (Windows), so they never take the CPU from the UI |
 | On standby | PDFium loaded, open documents open: ~9 MB each |
-| Idle 10 s | Free their caches (parsed pages, decoded images) |
+| Idle 3 s | Free their caches (parsed pages, decoded images) |
 | Idle 60 s, battery, low memory | Stop |
 | Crash | Only the helper dies; its tiles are rendered elsewhere. A page that crashed helpers twice is reported as failed |
 
 The in-process engine takes any tile, but at most one slow tile at a time, so ordinary
-tiles are never stuck behind slow ones.
+tiles are never stuck behind slow ones. When a page turns out slow, the engine keeps only
+the tile it is rendering and the others go back to the queue for the helpers.
 
 ### Editing (stages 6–9)
 

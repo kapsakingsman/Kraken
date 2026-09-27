@@ -6,6 +6,16 @@
 /// Width and height of a square tile in device pixels.
 pub const TILE_SIZE: u32 = 512;
 
+/// Tile edge on slow pages. A 256-pixel tile renders in roughly a quarter of the time of a
+/// 512-pixel one, so a slow area splits over several render processes; in total about 14%
+/// more work, which is why ordinary pages keep [`TILE_SIZE`].
+pub const SMALL_TILE_SIZE: u32 = 256;
+
+/// Tile sizes the engine renders.
+pub fn is_valid_tile_size(size: u32) -> bool {
+    size == TILE_SIZE || size == SMALL_TILE_SIZE
+}
+
 /// Size of a page in PDF points, with the page's own `/Rotate` already applied.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PageSize {
@@ -56,13 +66,14 @@ pub fn page_px_size(page: PageSize, scale: Scale) -> (u32, u32) {
     )
 }
 
-/// Number of tile columns and rows needed to cover a page of the given pixel size.
-pub fn tile_grid(page_px: (u32, u32)) -> (u32, u32) {
-    (page_px.0.div_ceil(TILE_SIZE), page_px.1.div_ceil(TILE_SIZE))
+/// Number of tile columns and rows of `size` pixels needed to cover a page of the given
+/// pixel size.
+pub fn tile_grid(page_px: (u32, u32), size: u32) -> (u32, u32) {
+    (page_px.0.div_ceil(size), page_px.1.div_ceil(size))
 }
 
 /// Area of the page covered by one tile. Tiles on the right and bottom edges are smaller
-/// than [`TILE_SIZE`] when the page size is not a multiple of it.
+/// than the tile size when the page size is not a multiple of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TileRect {
     pub x: u32,
@@ -72,17 +83,17 @@ pub struct TileRect {
 }
 
 /// Returns `None` if the tile lies outside the page.
-pub fn tile_rect(page_px: (u32, u32), tx: u32, ty: u32) -> Option<TileRect> {
-    let x = tx.checked_mul(TILE_SIZE)?;
-    let y = ty.checked_mul(TILE_SIZE)?;
-    if x >= page_px.0 || y >= page_px.1 {
+pub fn tile_rect(page_px: (u32, u32), size: u32, tx: u32, ty: u32) -> Option<TileRect> {
+    let x = tx.checked_mul(size)?;
+    let y = ty.checked_mul(size)?;
+    if size == 0 || x >= page_px.0 || y >= page_px.1 {
         return None;
     }
     Some(TileRect {
         x,
         y,
-        width: (page_px.0 - x).min(TILE_SIZE),
-        height: (page_px.1 - y).min(TILE_SIZE),
+        width: (page_px.0 - x).min(size),
+        height: (page_px.1 - y).min(size),
     })
 }
 
@@ -111,9 +122,9 @@ mod tests {
     #[test]
     fn grid_covers_page_and_edge_tiles_are_cropped() {
         let page_px = (1190, 1684);
-        assert_eq!(tile_grid(page_px), (3, 4));
+        assert_eq!(tile_grid(page_px, TILE_SIZE), (3, 4));
 
-        let last = tile_rect(page_px, 2, 3).unwrap();
+        let last = tile_rect(page_px, TILE_SIZE, 2, 3).unwrap();
         assert_eq!(
             last,
             TileRect {
@@ -126,7 +137,7 @@ mod tests {
 
         let covered: u64 = (0..3)
             .flat_map(|tx| (0..4).map(move |ty| (tx, ty)))
-            .map(|(tx, ty)| tile_rect(page_px, tx, ty).unwrap())
+            .map(|(tx, ty)| tile_rect(page_px, TILE_SIZE, tx, ty).unwrap())
             .map(|r| r.width as u64 * r.height as u64)
             .sum();
         assert_eq!(covered, 1190 * 1684);
@@ -134,9 +145,9 @@ mod tests {
 
     #[test]
     fn tiles_outside_the_page_are_rejected() {
-        assert_eq!(tile_rect((1190, 1684), 3, 0), None);
-        assert_eq!(tile_rect((1190, 1684), 0, 4), None);
-        assert_eq!(tile_rect((1190, 1684), u32::MAX, 0), None);
+        assert_eq!(tile_rect((1190, 1684), TILE_SIZE, 3, 0), None);
+        assert_eq!(tile_rect((1190, 1684), TILE_SIZE, 0, 4), None);
+        assert_eq!(tile_rect((1190, 1684), TILE_SIZE, u32::MAX, 0), None);
     }
 
     #[test]

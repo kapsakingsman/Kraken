@@ -1,5 +1,6 @@
 //! The main window: toolbar, page canvas with scrollbars, and the frame timing HUD.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,6 +9,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, Event, FontId, Key, Layout, Modifiers, MouseWheelUnit, Painter,
     Rect, RichText, Sense, Vec2, pos2, vec2,
 };
+use pdf_engine::geometry::SMALL_TILE_SIZE;
 use pdf_engine::geometry::{page_px_size, tile_rect};
 use pdf_engine::{DocId, PageSize, Quality, RenderPool, Scale, TILE_SIZE, TileKey};
 use pdf_view::camera::{fit_page_zoom, fit_width_zoom, step_zoom, wheel_notches};
@@ -55,6 +57,9 @@ pub struct ViewerApp {
     engine: Result<Arc<RenderPool>, String>,
     /// Render workers were started (once the first page was on screen).
     prewarmed: bool,
+    /// Tile size chosen per page and render scale, with the frame it was last used in.
+    grids: HashMap<(DocId, u32, Scale), (u32, u64)>,
+    frame: u64,
     document: Document,
     camera: Camera,
     settle: ZoomSettle,
@@ -95,6 +100,8 @@ impl ViewerApp {
             message,
             engine: boot.engine,
             prewarmed: false,
+            grids: HashMap::new(),
+            frame: 0,
             document: demo_document(),
             camera: Camera::default(),
             settle: ZoomSettle::new(START_ZOOM),
@@ -154,6 +161,7 @@ impl ViewerApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{name} - Kraken PDF")));
                 self.tiles.clear();
                 self.tiles.expect(rendered_ahead);
+                self.grids.clear();
                 self.fallback_scale = None;
                 self.document = Document {
                     name,
@@ -166,6 +174,31 @@ impl ViewerApp {
             }
             Err(e) => self.message = Some(e),
         }
+    }
+
+    /// Tile edge for a page at a render scale. Pages that render slowly get small tiles,
+    /// which the render processes can share (see `pdf_engine::RenderPool`). The choice is
+    /// kept per scale so tiles already rendered stay usable, except that a page found slow
+    /// before any of its tiles at that scale arrived switches right away.
+    fn tile_size_for(
+        grids: &mut HashMap<(DocId, u32, Scale), (u32, u64)>,
+        tiles: &TileManager,
+        engine: &Result<Arc<RenderPool>, String>,
+        frame: u64,
+        (doc, page, scale): (DocId, u32, Scale),
+    ) -> u32 {
+        let slow = engine
+            .as_ref()
+            .is_ok_and(|engine| engine.is_slow(doc, page));
+        let preferred = if slow { SMALL_TILE_SIZE } else { TILE_SIZE };
+        let grid = grids
+            .entry((doc, page, scale))
+            .or_insert((preferred, frame));
+        if grid.0 != preferred && slow && !tiles.has_any(doc, page, scale, grid.0) {
+            grid.0 = preferred;
+        }
+        grid.1 = frame;
+        grid.0
     }
 
     /// Returns `true` when the Open button was clicked.
@@ -247,6 +280,12 @@ impl ViewerApp {
         let rect = ui.max_rect();
         let response = ui.allocate_rect(rect, Sense::hover());
         let ctx = ui.ctx().clone();
+        self.frame += 1;
+        if self.grids.len() > 4096 {
+            // Scales not drawn for a while (a pinch passes through many).
+            let frame = self.frame;
+            self.grids.retain(|_, (_, used)| frame - *used < 600);
+        }
         let ppp = ctx.pixels_per_point();
         let view = (rect.width(), rect.height());
         let content = (self.document.layout.width(), self.document.layout.height());
@@ -548,6 +587,7 @@ impl ViewerApp {
                 scale: Scale::from_px_per_pt(preview_px_per_pt(slot.width, slot.height)),
                 tx: 0,
                 ty: 0,
+                size: pdf_engine::TILE_SIZE,
             };
             if let Some(texture) =
                 self.tiles
@@ -557,7 +597,19 @@ impl ViewerApp {
                 painter.image(texture.id(), page, FULL_UV, Color32::WHITE);
             }
 
-            let mut draw = |scale: Scale, priority: Option<u32>| {
+            let render_tiles = Self::tile_size_for(
+                &mut self.grids,
+                &self.tiles,
+                &self.engine,
+                self.frame,
+                (doc, index as u32, render_scale),
+            );
+            let fallback_tiles = self.fallback_scale.map_or(TILE_SIZE, |scale| {
+                self.grids
+                    .get(&(doc, index as u32, scale))
+                    .map_or(TILE_SIZE, |grid| grid.0)
+            });
+            let mut draw = |scale: Scale, tile_size: u32, priority: Option<u32>| {
                 draw_page_tiles(
                     &mut self.tiles,
                     &painter,
@@ -570,6 +622,7 @@ impl ViewerApp {
                         ppp,
                         view_px,
                         scale,
+                        tile_size,
                         priority,
                     },
                 )
@@ -577,12 +630,12 @@ impl ViewerApp {
             if let Some(fallback) = self.fallback_scale
                 && fallback != render_scale
             {
-                draw(fallback, None);
+                draw(fallback, fallback_tiles, None);
             }
             // While a zoom gesture is in progress the existing tiles are stretched; asking
             // for more tiles at a scale about to be replaced would only waste rendering.
             let settled = render_scale == display_scale;
-            missing += draw(render_scale, settled.then_some(tile_priority));
+            missing += draw(render_scale, render_tiles, settled.then_some(tile_priority));
         }
         self.current_page = layout.page_at(top + view_h_pt / 2.0);
         if missing == 0 && self.document.id.is_some() {
@@ -721,6 +774,7 @@ struct PageTiles {
     ppp: f32,
     view_px: (f32, f32),
     scale: Scale,
+    tile_size: u32,
     /// `Some` requests missing tiles with this base priority; `None` only draws cached ones.
     priority: Option<u32>,
 }
@@ -743,15 +797,16 @@ fn draw_page_tiles(tiles: &mut TileManager, painter: &Painter, p: PageTiles) -> 
             page_px,
             (origin.0, origin.1 + view.1),
             (view.0, view.1 * 3.0),
+            p.tile_size,
         )
     } else {
-        visible_tiles(page_px, origin, view)
+        visible_tiles(page_px, origin, view, p.tile_size)
     };
     let to_screen = 1.0 / (k * p.ppp);
     let mut missing = 0;
     for ty in rows {
         for tx in cols.clone() {
-            let Some(r) = tile_rect(page_px, tx, ty) else {
+            let Some(r) = tile_rect(page_px, p.tile_size, tx, ty) else {
                 continue;
             };
             let screen = Rect::from_min_size(
@@ -764,11 +819,13 @@ fn draw_page_tiles(tiles: &mut TileManager, painter: &Painter, p: PageTiles) -> 
                 scale: p.scale,
                 tx,
                 ty,
+                size: p.tile_size,
             };
             let texture = match p.priority {
                 Some(base) => {
                     let dx = origin.0 + (r.x + r.width / 2) as f32 - view.0 / 2.0;
                     let dy = origin.1 + (r.y + r.height / 2) as f32 - view.1 / 2.0;
+                    // In full-size tiles, so priorities compare across tile sizes.
                     let tiles_away = ((dx.abs() + dy.abs()) / TILE_SIZE as f32) as u32;
                     tiles.get(key, base + tiles_away, Quality::Sharp)
                 }

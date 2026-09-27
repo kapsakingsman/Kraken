@@ -37,8 +37,10 @@ use crate::{
 pub const SLOW_TILE_MS: f32 = 25.0;
 /// Enough helpers are used for the waiting work on slow pages to finish in about this long.
 pub const TARGET_MS: f32 = 150.0;
-/// Idle helpers free their caches (parsed pages, decoded images) after this long.
-pub const TRIM_AFTER: Duration = Duration::from_secs(10);
+/// Idle helpers free their caches (parsed pages, decoded images) after this long. On slow
+/// pages these caches are what makes helpers expensive in memory (each holds its own copy
+/// of the parsed page), so they go soon.
+pub const TRIM_AFTER: Duration = Duration::from_secs(3);
 /// Idle helpers stop after this long; they are started again when needed.
 pub const STOP_AFTER: Duration = Duration::from_secs(60);
 /// No helpers are started, and idle ones stop, when less memory than this is free.
@@ -117,6 +119,7 @@ pub struct RenderPool {
     events: Sender<Event>,
     results: Receiver<TileResult>,
     status: Arc<Mutex<PoolStatus>>,
+    slow_pages: Arc<Mutex<HashSet<(DocId, u32)>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -130,6 +133,7 @@ impl RenderPool {
         let (events, event_rx) = unbounded();
         let (result_tx, results) = unbounded();
         let status = Arc::new(Mutex::new(PoolStatus::default()));
+        let slow_pages = Arc::new(Mutex::new(HashSet::new()));
 
         // The engine's results reach the scheduler like any other event.
         {
@@ -154,6 +158,8 @@ impl RenderPool {
             delivered: Delivered::default(),
             docs: HashMap::new(),
             page_ms: HashMap::new(),
+            slow_pages: Arc::clone(&slow_pages),
+            main_busy_since: None,
             crashes: HashMap::new(),
             given_up: HashSet::new(),
             results: result_tx,
@@ -174,6 +180,7 @@ impl RenderPool {
             events,
             results,
             status,
+            slow_pages,
             thread: Some(thread),
         })
     }
@@ -222,6 +229,14 @@ impl RenderPool {
 
     pub fn results(&self) -> &Receiver<TileResult> {
         &self.results
+    }
+
+    /// Whether tiles of this page are slow to render (see [`SLOW_TILE_MS`]). Such pages are
+    /// worth smaller tiles, which the render processes can share.
+    pub fn is_slow(&self, doc: DocId, page: u32) -> bool {
+        self.slow_pages
+            .lock()
+            .is_ok_and(|pages| pages.contains(&(doc, page)))
     }
 
     pub fn status(&self) -> PoolStatus {
@@ -317,6 +332,10 @@ struct Scheduler {
     /// Slowest tile seen per page, in milliseconds. The slowest, not the latest: a page's
     /// quick drafts must not hide that its final tiles are slow.
     page_ms: HashMap<(DocId, u32), f32>,
+    /// The pages of `page_ms` at or above [`SLOW_TILE_MS`], shared with the caller.
+    slow_pages: Arc<Mutex<HashSet<(DocId, u32)>>>,
+    /// Since when the in-process engine has been working on its current tile.
+    main_busy_since: Option<Instant>,
     crashes: HashMap<(DocId, u32), u32>,
     /// Pages that crashed helpers [`MAX_CRASHES`] times.
     given_up: HashSet<(DocId, u32)>,
@@ -336,10 +355,9 @@ impl Scheduler {
         loop {
             // Without helpers there is nothing to look after, so no timer: an idle app
             // must not wake up.
-            let event = if self.helpers.is_empty() {
-                events.recv().map_err(|_| RecvTimeoutError::Disconnected)
-            } else {
-                events.recv_timeout(HOUSEKEEPING)
+            let event = match self.next_check() {
+                None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                Some(wait) => events.recv_timeout(wait),
             };
             let mut woke = false;
             match event {
@@ -362,6 +380,7 @@ impl Scheduler {
             if stop {
                 break;
             }
+            self.detect_slow_in_flight();
             self.housekeeping();
             self.assign();
             self.flush_assignments();
@@ -404,6 +423,8 @@ impl Scheduler {
             Event::MainResult(result) => {
                 let outcome = result.tile;
                 self.finished(None, result.key, outcome, woke);
+                // The engine goes on with its next tile, if it has one.
+                self.main_busy_since = (!self.main_slot.assigned.is_empty()).then(Instant::now);
             }
             Event::Helper(id, message) => self.on_helper_message(id, message, woke),
             Event::HelperGone(id) => self.helper_gone(id, woke),
@@ -489,6 +510,9 @@ impl Scheduler {
         }
         self.docs.remove(&doc);
         self.page_ms.retain(|(d, _), _| *d != doc);
+        if let Ok(mut slow) = self.slow_pages.lock() {
+            slow.retain(|(d, _)| *d != doc);
+        }
         self.crashes.retain(|(d, _), _| *d != doc);
         self.given_up.retain(|(d, _)| *d != doc);
     }
@@ -572,9 +596,7 @@ impl Scheduler {
             Err(EngineError::Cancelled) => self.queue.push(request),
             outcome => {
                 if let Ok(tile) = &outcome {
-                    let ms = tile.render_time.as_secs_f32() * 1000.0;
-                    let slowest = self.page_ms.entry((key.doc, key.page)).or_default();
-                    *slowest = slowest.max(ms);
+                    self.record_time(key, tile.render_time.as_secs_f32() * 1000.0);
                     if helper.is_some() {
                         self.counters.tiles_by_helpers += 1;
                     }
@@ -627,6 +649,90 @@ impl Scheduler {
             } else {
                 self.queue.push(request);
             }
+        }
+    }
+
+    /// Remembers how long a tile of the page took (the slowest so far counts).
+    fn record_time(&mut self, key: TileKey, ms: f32) {
+        let slowest = self.page_ms.entry((key.doc, key.page)).or_default();
+        let was_slow = *slowest >= SLOW_TILE_MS;
+        *slowest = slowest.max(ms);
+        if *slowest >= SLOW_TILE_MS && !was_slow {
+            if let Ok(mut slow) = self.slow_pages.lock() {
+                slow.insert((key.doc, key.page));
+            }
+            self.rebalance_main();
+        }
+    }
+
+    /// The in-process engine may hold several tiles of a page that has just turned out
+    /// slow; it keeps the one it is rendering and the rest go back to the queue, for the
+    /// helpers to share.
+    fn rebalance_main(&mut self) {
+        let current = self.main_current();
+        let page_ms = &self.page_ms;
+        let mut kept_slow = false;
+        let mut back = Vec::new();
+        self.main_slot.assigned.retain(|a| {
+            if !Self::is_slow(page_ms, &a.key) {
+                return true;
+            }
+            if Some(a.key) == current && !kept_slow {
+                kept_slow = true;
+                return true;
+            }
+            back.push(*a);
+            false
+        });
+        if !back.is_empty() {
+            self.main_slot.dirty = true;
+            for request in back {
+                self.queue.push(request);
+            }
+        }
+    }
+
+    /// The tile the in-process engine is most likely rendering right now (it renders the
+    /// most urgent first).
+    fn main_current(&self) -> Option<TileKey> {
+        self.main_slot
+            .assigned
+            .iter()
+            .min_by_key(|a| a.priority)
+            .map(|a| a.key)
+    }
+
+    /// A tile that has been rendering for [`SLOW_TILE_MS`] already makes its page slow,
+    /// without waiting for it to finish (on a heavy drawing that can take 400 ms, which
+    /// the helpers can use).
+    fn detect_slow_in_flight(&mut self) {
+        let (Some(since), Some(key)) = (self.main_busy_since, self.main_current()) else {
+            return;
+        };
+        let ms = since.elapsed().as_secs_f32() * 1000.0;
+        if ms >= SLOW_TILE_MS && !Self::is_slow(&self.page_ms, &key) {
+            self.record_time(key, ms);
+        }
+    }
+
+    /// How long the scheduler may sleep without an event: until the current tile would
+    /// count as slow, until the next housekeeping, or indefinitely when all is quiet.
+    fn next_check(&self) -> Option<Duration> {
+        let slow_check = match (self.main_busy_since, self.main_current()) {
+            (Some(since), Some(key)) if !Self::is_slow(&self.page_ms, &key) => {
+                let limit = Duration::from_secs_f32(SLOW_TILE_MS / 1000.0);
+                Some(
+                    limit
+                        .saturating_sub(since.elapsed())
+                        .max(Duration::from_millis(1)),
+                )
+            }
+            _ => None,
+        };
+        let housekeeping = (!self.helpers.is_empty()).then_some(HOUSEKEEPING);
+        match (slow_check, housekeeping) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
 
@@ -686,6 +792,9 @@ impl Scheduler {
             // ordinary tiles are never stuck behind several slow ones.
             if self.main_slot.assigned.len() < MAIN_CAPACITY && (!slow || main_slow == 0) {
                 self.queue.take_if(&request.key, |_| true);
+                if self.main_slot.assigned.is_empty() {
+                    self.main_busy_since = Some(Instant::now());
+                }
                 self.main_slot.assigned.push(request);
                 self.main_slot.dirty = true;
                 continue;

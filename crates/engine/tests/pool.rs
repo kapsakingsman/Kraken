@@ -117,7 +117,10 @@ fn fixture() -> Fixture {
 }
 
 fn all_tiles(doc: &DocInfo, page: u32, scale: Scale) -> Vec<TileRequest> {
-    let (cols, rows) = tile_grid(page_px_size(doc.page_sizes[page as usize], scale));
+    let (cols, rows) = tile_grid(
+        page_px_size(doc.page_sizes[page as usize], scale),
+        pdf_engine::TILE_SIZE,
+    );
     (0..rows)
         .flat_map(|ty| (0..cols).map(move |tx| (tx, ty)))
         .map(|(tx, ty)| TileRequest {
@@ -127,6 +130,7 @@ fn all_tiles(doc: &DocInfo, page: u32, scale: Scale) -> Vec<TileRequest> {
                 scale,
                 tx,
                 ty,
+                size: pdf_engine::TILE_SIZE,
             },
             generation: 0,
             priority: tx + ty,
@@ -325,4 +329,36 @@ fn tiles_nobody_wants_any_more_are_not_delivered() {
             (Err(e), _) => panic!("{e}"),
         }
     }
+}
+
+#[test]
+fn a_slow_page_is_noticed_while_its_first_tile_renders() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture = fixture();
+    let pool = pool(Some(worker()), 2);
+    let doc = pool.open(&fixture.path, None).unwrap();
+    pool.prewarm();
+    wait_until("helpers to start", || pool.status().helpers == 2);
+
+    // Nothing is known about page 1 yet: its first tile alone shows it is slow, long
+    // before that tile is done, so the other tiles already go to the helpers.
+    let requests = all_tiles(&doc, 0, Scale::from_px_per_pt(1.5));
+    let count = requests.len();
+    pool.set_wanted(1, requests, Some(0));
+    for result in collect(&pool, count) {
+        result.tile.unwrap();
+    }
+    assert!(pool.is_slow(doc.id, 0));
+    assert!(
+        pool.status().tiles_by_helpers > 0,
+        "helpers should have joined in on the first slow page"
+    );
+
+    let fast = all_tiles(&doc, 1, Scale::from_px_per_pt(1.0));
+    let count = fast.len();
+    pool.set_wanted(2, fast, Some(count as u64));
+    for result in collect(&pool, count) {
+        result.tile.unwrap();
+    }
+    assert!(!pool.is_slow(doc.id, 1));
 }

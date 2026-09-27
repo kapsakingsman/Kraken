@@ -3,7 +3,9 @@
 //! Each kind stresses a different part of rendering:
 //! - `text`: many pages of small text (font rasterization, the common case),
 //! - `vector`: pages with tens of thousands of path segments (CAD drawings, maps),
-//! - `images`: pages covered by a large uncompressed image (scans, photos).
+//! - `images`: pages covered by a large uncompressed image (scans, photos),
+//! - `plan`: one A1 architectural-plan-like page: a few very dense areas on a sparse sheet,
+//!   so a handful of tiles take hundreds of milliseconds and the rest almost nothing.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -12,6 +14,7 @@ pub struct Fixtures {
     pub text: PathBuf,
     pub vector: PathBuf,
     pub images: PathBuf,
+    pub plan: PathBuf,
 }
 
 /// Page count of the text fixture: the "500-page PDF" from the roadmap.
@@ -26,24 +29,36 @@ pub fn ensure(dir: &Path) -> std::io::Result<Fixtures> {
         text: dir.join("text-500-pages.pdf"),
         vector: dir.join("vector-heavy.pdf"),
         images: dir.join("image-heavy.pdf"),
+        plan: dir.join("plan-a1.pdf"),
     };
     let mut rng = Rng(0x5eed);
     if !fixtures.text.exists() {
         let pages = (1..=TEXT_PAGES).map(|n| text_page(n, &mut rng)).collect();
-        write_pdf(&fixtures.text, pages, None)?;
+        write_pdf(&fixtures.text, pages, None, A4)?;
     }
     if !fixtures.vector.exists() {
         let pages = (0..VECTOR_PAGES).map(|_| vector_page(&mut rng)).collect();
-        write_pdf(&fixtures.vector, pages, None)?;
+        write_pdf(&fixtures.vector, pages, None, A4)?;
     }
     if !fixtures.images.exists() {
         let pages = (0..IMAGE_PAGES)
             .map(|_| b"q 595 0 0 842 0 0 cm /Im1 Do Q".to_vec())
             .collect();
-        write_pdf(&fixtures.images, pages, Some(image(1200, 1700)))?;
+        write_pdf(&fixtures.images, pages, Some(image(1200, 1700)), A4)?;
+    }
+    if !fixtures.plan.exists() {
+        write_pdf(
+            &fixtures.plan,
+            vec![plan_page(&mut rng)],
+            None,
+            A1_LANDSCAPE,
+        )?;
     }
     Ok(fixtures)
 }
+
+const A4: (u32, u32) = (595, 842);
+const A1_LANDSCAPE: (u32, u32) = (2384, 1684);
 
 /// Small deterministic random numbers (xorshift), so fixtures are identical on every run.
 struct Rng(u64);
@@ -108,6 +123,41 @@ fn vector_page(rng: &mut Rng) -> Vec<u8> {
     ops.into_bytes()
 }
 
+/// An A1 sheet with a light grid of walls and six very dense detail areas (150,000 segments
+/// each), like the detailed parts of an architectural plan.
+fn plan_page(rng: &mut Rng) -> Vec<u8> {
+    let (w, h) = (A1_LANDSCAPE.0 as i64, A1_LANDSCAPE.1 as i64);
+    let mut ops = String::from("q 0.8 w 0 0 0 RG\n");
+    for x in (40..w - 40).step_by(160) {
+        let _ = writeln!(ops, "{x} 40 m {x} {} l S", h - 40);
+    }
+    for y in (40..h - 40).step_by(160) {
+        let _ = writeln!(ops, "40 {y} m {} {y} l S", w - 40);
+    }
+    ops.push_str("0.2 w\n");
+    for (cx, cy) in [
+        (400, 1300),
+        (1200, 1250),
+        (1900, 1300),
+        (500, 450),
+        (1300, 500),
+        (2000, 400),
+    ] {
+        for _ in 0..500 {
+            let (mut x, mut y) = (cx + rng.below(300) as i64, cy + rng.below(300) as i64);
+            let _ = write!(ops, "{x} {y} m");
+            for _ in 0..300 {
+                x = (x + rng.below(21) as i64 - 10).clamp(cx, cx + 300);
+                y = (y + rng.below(21) as i64 - 10).clamp(cy, cy + 300);
+                let _ = write!(ops, " {x} {y} l");
+            }
+            ops.push_str(" S\n");
+        }
+    }
+    ops.push_str("Q\n");
+    ops.into_bytes()
+}
+
 /// An uncompressed RGB image with gradients and noise, so it cannot be skipped cheaply.
 fn image(width: usize, height: usize) -> (usize, usize, Vec<u8>) {
     let mut rng = Rng(42);
@@ -129,6 +179,7 @@ fn write_pdf(
     path: &Path,
     pages: Vec<Vec<u8>>,
     image: Option<(usize, usize, Vec<u8>)>,
+    (width, height): (u32, u32),
 ) -> std::io::Result<()> {
     let mut objects: Vec<Vec<u8>> = Vec::new();
     let add = |body: Vec<u8>, objects: &mut Vec<Vec<u8>>| {
@@ -169,8 +220,8 @@ fn write_pdf(
         stream.extend_from_slice(b"\nendstream");
         let content_id = add(stream, &mut objects);
         let page = format!(
-            "<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 595 842] /Resources {resources} \
-             /Contents {content_id} 0 R >>"
+            "<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 {width} {height}] \
+             /Resources {resources} /Contents {content_id} 0 R >>"
         );
         kids.push(add(page.into_bytes(), &mut objects));
     }

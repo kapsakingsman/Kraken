@@ -146,6 +146,7 @@ fn first_page_requests(info: &DocInfo, display_scale: Option<f32>) -> Vec<TileRe
         scale,
         tx,
         ty,
+        size: pdf_engine::TILE_SIZE,
     };
     let mut requests = vec![TileRequest {
         key: key(
@@ -159,7 +160,7 @@ fn first_page_requests(info: &DocInfo, display_scale: Option<f32>) -> Vec<TileRe
     }];
     if let Some(display_scale) = display_scale {
         let scale = Scale::from_zoom(START_ZOOM, display_scale);
-        let (cols, rows) = tile_grid(page_px_size(size, scale));
+        let (cols, rows) = tile_grid(page_px_size(size, scale), pdf_engine::TILE_SIZE);
         requests.extend(
             (0..rows)
                 .flat_map(|ty| (0..cols).map(move |tx| (tx, ty)))

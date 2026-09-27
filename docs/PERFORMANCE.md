@@ -258,3 +258,24 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
     On this machine the software GPU (llvmpipe) competes for the same 4 cores; with a real
     GPU the helpers have the cores to themselves. With the 500-page text fixture the
     helpers render no tiles at all, and idle CPU stays at 0%.
+12. **An A1 construction plan took 2.1 s to show its first page.** A few tiles of such a
+    drawing take 250–400 ms each (the dense details), the rest almost nothing. Three
+    changes (Linux, software GPU, the generated `plan-a1.pdf` fixture, tiles up to 250 ms):
+    - A page counts as slow as soon as a tile has been rendering for 25 ms, instead of
+      after it finished, and the in-process engine hands back the other tiles of that page
+      it had already taken, so the helpers share them.
+    - Slow pages use 256-pixel tiles: a dense area splits into four tiles that render on
+      different processes (about 14% more work in total, which is why ordinary pages keep
+      512-pixel tiles).
+    - Idle helpers free their caches after 3 s instead of 10 s: each holds its own copy of
+      the parsed page, which on such drawings is tens of megabytes.
+
+    | `plan-a1.pdf`, Linux software GPU (4 cores) | Before | After |
+    |---|---:|---:|
+    | Start to first sharp page | 992 ms | 490 ms |
+    | Zoom stop to sharp, median | 335 ms | 347 ms |
+
+    On this 4-core machine, zooming gains nothing: the software GPU needs the same cores.
+    The screen stays pixel-for-pixel identical to PDFium's own render with the small tiles.
+13. **`--pdf` runs failed on budgets made for the fixtures.** With `--pdf` the budgets are
+    now shown for comparison ("over (not enforced for --pdf)") and do not fail the run.

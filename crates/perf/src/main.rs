@@ -251,7 +251,10 @@ fn engine_suite(fixtures: &Fixtures, ctx: &mut Ctx) -> Result<()> {
         let started = Instant::now();
         for page in 0..pages as u32 {
             let page_started = Instant::now();
-            let (cols, rows) = tile_grid(page_px_size(doc.page_sizes[page as usize], scale));
+            let (cols, rows) = tile_grid(
+                page_px_size(doc.page_sizes[page as usize], scale),
+                pdf_engine::TILE_SIZE,
+            );
             for ty in 0..rows {
                 for tx in 0..cols {
                     engine.request_tile(TileRequest {
@@ -261,6 +264,7 @@ fn engine_suite(fixtures: &Fixtures, ctx: &mut Ctx) -> Result<()> {
                             scale,
                             tx,
                             ty,
+                            size: pdf_engine::TILE_SIZE,
                         },
                         generation: 0,
                         priority: ty * cols + tx,

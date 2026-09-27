@@ -43,6 +43,9 @@ pub struct TileKey {
     pub scale: Scale,
     pub tx: u32,
     pub ty: u32,
+    /// Tile edge in pixels: [`TILE_SIZE`] normally; smaller tiles let several render
+    /// processes share a slow page (see [`geometry::SMALL_TILE_SIZE`]).
+    pub size: u32,
 }
 
 #[derive(Clone, Copy, Debug)]

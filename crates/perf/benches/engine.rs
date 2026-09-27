@@ -14,6 +14,7 @@ fn render_tile(engine: &Engine, doc: &DocInfo, page: u32, scale: Scale, tx: u32)
             scale,
             tx,
             ty: 0,
+            size: pdf_engine::TILE_SIZE,
         },
         generation: 0,
         priority: 0,

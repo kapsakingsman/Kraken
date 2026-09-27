@@ -264,7 +264,7 @@ fn render_page(
     mut on_tile: impl FnMut(TileRect, &Tile),
 ) -> Result<PageStats> {
     let page_px = page_px_size(doc.page_sizes[page as usize], scale);
-    let (cols, rows) = tile_grid(page_px);
+    let (cols, rows) = tile_grid(page_px, pdf_engine::TILE_SIZE);
     let started = Instant::now();
     for ty in 0..rows {
         for tx in 0..cols {
@@ -275,6 +275,7 @@ fn render_page(
                     scale,
                     tx,
                     ty,
+                    size: pdf_engine::TILE_SIZE,
                 },
                 generation: 0,
                 priority: ty * cols + tx,
@@ -293,7 +294,8 @@ fn render_page(
         let tile = result
             .tile
             .with_context(|| format!("page {} tile ({tx}, {ty})", page + 1))?;
-        let rect = tile_rect(page_px, tx, ty).context("engine returned a tile outside the page")?;
+        let rect = tile_rect(page_px, pdf_engine::TILE_SIZE, tx, ty)
+            .context("engine returned a tile outside the page")?;
         on_tile(rect, &tile);
         tile_times.push(tile.render_time);
     }

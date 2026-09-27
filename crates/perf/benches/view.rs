@@ -28,6 +28,7 @@ fn benches(c: &mut Criterion) {
                 (12_000, 17_000),
                 (-3000.0, -5000.0),
                 (1920.0, 1080.0),
+                pdf_engine::TILE_SIZE,
             ))
         })
     });
@@ -41,6 +42,7 @@ fn benches(c: &mut Criterion) {
             scale: Scale::from_px_per_pt(2.0),
             tx: i % 4,
             ty: (i / 4) % 4,
+            size: pdf_engine::TILE_SIZE,
         };
         let mut next = 0u32;
         b.iter(|| {

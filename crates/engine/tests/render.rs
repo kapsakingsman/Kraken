@@ -100,9 +100,15 @@ fn engine() -> Engine {
 }
 
 /// Renders every tile of a page through the engine and stitches them into one RGBA image.
-fn render_stitched(engine: &Engine, doc: &DocInfo, page: u32, scale: Scale) -> (u32, u32, Vec<u8>) {
+fn render_stitched(
+    engine: &Engine,
+    doc: &DocInfo,
+    page: u32,
+    scale: Scale,
+    size: u32,
+) -> (u32, u32, Vec<u8>) {
     let page_px = page_px_size(doc.page_sizes[page as usize], scale);
-    let (cols, rows) = tile_grid(page_px);
+    let (cols, rows) = tile_grid(page_px, size);
     for ty in 0..rows {
         for tx in 0..cols {
             engine.request_tile(TileRequest {
@@ -112,6 +118,7 @@ fn render_stitched(engine: &Engine, doc: &DocInfo, page: u32, scale: Scale) -> (
                     scale,
                     tx,
                     ty,
+                    size,
                 },
                 generation: 0,
                 priority: ty * cols + tx,
@@ -123,7 +130,7 @@ fn render_stitched(engine: &Engine, doc: &DocInfo, page: u32, scale: Scale) -> (
     for _ in 0..cols * rows {
         let result = engine.results().recv_timeout(TIMEOUT).expect("tile result");
         let tile = result.tile.expect("tile rendered");
-        let rect = tile_rect(page_px, result.key.tx, result.key.ty).unwrap();
+        let rect = tile_rect(page_px, size, result.key.tx, result.key.ty).unwrap();
         assert_eq!((tile.width, tile.height), (rect.width, rect.height));
         assert_eq!(tile.rgba.len(), (rect.width * rect.height * 4) as usize);
         for row in 0..rect.height as usize {
@@ -179,20 +186,22 @@ fn stitched_tiles_match_a_full_page_render() {
     // 2.0 px/pt gives an A4 page a 3x4 grid with partial tiles on the right and bottom.
     for scale in [Scale::from_px_per_pt(2.0), Scale::from_zoom(137.0, 1.25)] {
         for page in 0..3 {
-            let (w, h, stitched) = render_stitched(&engine, &doc, page, scale);
-            let reference = render_reference(&fixture.path, page, (w, h));
-            let diff = mean_abs_diff(&stitched, &reference);
-            assert!(
-                diff < 0.02,
-                "page {page} at {scale:?}: tiles differ from the full render by {diff:.3}/255"
-            );
-            let ink = stitched
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .filter(|p| p[0] < 200)
-                .count();
-            assert!(ink > 100, "page {page} rendered blank");
+            for size in [pdf_engine::TILE_SIZE, pdf_engine::geometry::SMALL_TILE_SIZE] {
+                let (w, h, stitched) = render_stitched(&engine, &doc, page, scale, size);
+                let reference = render_reference(&fixture.path, page, (w, h));
+                let diff = mean_abs_diff(&stitched, &reference);
+                assert!(
+                    diff < 0.02,
+                    "page {page} at {scale:?}, {size} px tiles: tiles differ from the full render by {diff:.3}/255"
+                );
+                let ink = stitched
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|p| p[0] < 200)
+                    .count();
+                assert!(ink > 100, "page {page} rendered blank");
+            }
         }
     }
 }
@@ -204,7 +213,7 @@ fn tiles_are_rgba_and_opaque() {
     let engine = engine();
     let doc = engine.open(&fixture.path, None).unwrap();
     let scale = Scale::from_px_per_pt(2.0);
-    let (w, _, image) = render_stitched(&engine, &doc, 0, scale);
+    let (w, _, image) = render_stitched(&engine, &doc, 0, scale, pdf_engine::TILE_SIZE);
 
     let pixel = |x_pt: f32, y_pt: f32| {
         let height_pt = doc.page_sizes[0].height_pt;
@@ -241,6 +250,7 @@ fn stale_generations_are_not_rendered() {
         scale: Scale::from_px_per_pt(1.0),
         tx,
         ty: 0,
+        size: pdf_engine::TILE_SIZE,
     };
 
     engine.set_generation(5);
@@ -295,6 +305,7 @@ fn reports_errors_instead_of_panicking() {
                 scale,
                 tx,
                 ty: 0,
+                size: pdf_engine::TILE_SIZE,
             },
             generation: 0,
             priority: 0,
@@ -312,6 +323,7 @@ fn reports_errors_instead_of_panicking() {
             scale,
             tx: 0,
             ty: 0,
+            size: pdf_engine::TILE_SIZE,
         },
         generation: 0,
         priority: 0,
@@ -411,6 +423,7 @@ fn render_one(engine: &Engine, doc: &DocInfo, page: u32, quality: Quality) -> pd
             scale: Scale::from_px_per_pt(0.5),
             tx: 0,
             ty: 0,
+            size: pdf_engine::TILE_SIZE,
         },
         generation: 0,
         priority: 0,
@@ -516,6 +529,7 @@ fn a_tile_nobody_wants_any_more_stops_rendering_part_way() {
         scale: Scale::from_px_per_pt(scale),
         tx: 0,
         ty: 0,
+        size: pdf_engine::TILE_SIZE,
     };
     let request = |key| TileRequest {
         key,
@@ -580,6 +594,7 @@ fn a_tile_still_wanted_is_finished_once_not_twice() {
             scale: Scale::from_px_per_pt(2.0),
             tx: 0,
             ty: 0,
+            size: pdf_engine::TILE_SIZE,
         },
         generation: 0,
         priority: 0,
@@ -619,6 +634,7 @@ fn a_tile_asked_for_again_before_its_result_was_read_is_not_rendered_twice() {
             scale: Scale::from_px_per_pt(1.0),
             tx: 0,
             ty: 0,
+            size: pdf_engine::TILE_SIZE,
         },
         generation: 0,
         priority: 0,

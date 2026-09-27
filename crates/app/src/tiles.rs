@@ -5,7 +5,8 @@ use std::collections::{HashSet, VecDeque};
 
 use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
 use pdf_engine::{
-    EngineError, Quality, RenderPool, TILE_SIZE, Tile, TileKey, TileRequest, TileResult,
+    DocId, EngineError, Quality, RenderPool, Scale, TILE_SIZE, Tile, TileKey, TileRequest,
+    TileResult,
 };
 use pdf_view::TileCache;
 
@@ -189,6 +190,13 @@ impl TileManager {
     /// they were requested ahead, while the window was still being created.
     pub fn expect(&mut self, keys: Vec<TileKey>) {
         self.expected.extend(keys);
+    }
+
+    /// Whether any tile of this page at this scale and tile size is cached or on its way.
+    pub fn has_any(&self, doc: DocId, page: u32, scale: Scale, size: u32) -> bool {
+        let matches =
+            |k: &TileKey| k.doc == doc && k.page == page && k.scale == scale && k.size == size;
+        self.cache.keys().any(matches) || self.ready_keys.iter().any(matches)
     }
 
     /// Returns the tile's texture if it is already cached, without requesting it.

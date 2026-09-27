@@ -114,6 +114,7 @@ mod tests {
                 scale: Scale::from_px_per_pt(1.0),
                 tx,
                 ty: 0,
+                size: crate::TILE_SIZE,
             },
             generation,
             priority,

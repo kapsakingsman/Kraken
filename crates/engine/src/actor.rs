@@ -9,7 +9,7 @@ use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use pdfium_render::prelude::*;
 
 use crate::delivered::Delivered;
-use crate::geometry::{self, PageSize, TILE_SIZE, TileRect};
+use crate::geometry::{self, PageSize, TileRect};
 use crate::queue::TileQueue;
 use crate::{DocId, DocInfo, EngineError, Quality, Tile, TileRequest, TileResult};
 
@@ -103,7 +103,7 @@ impl Engine {
                     generation: 0,
                     next_doc: 1,
                     page_cache,
-                    bitmap: None,
+                    bitmaps: HashMap::new(),
                     deferred: Vec::new(),
                     delivered: Delivered::default(),
                 }
@@ -211,7 +211,9 @@ struct Worker<'p> {
     next_doc: u64,
     page_cache: usize,
     /// Reused for every tile so rendering does not allocate a new 1 MB buffer each time.
-    bitmap: Option<PdfBitmap<'p>>,
+    /// One per tile size (a tile is rendered into a bitmap of exactly its size: PDFium
+    /// draws the whole bitmap, so a larger one would cost more).
+    bitmaps: HashMap<u32, PdfBitmap<'p>>,
     /// Commands that arrived during a render and must wait until it is over (they may
     /// close the document being rendered).
     deferred: Vec<Command>,
@@ -314,7 +316,7 @@ impl<'p> Worker<'p> {
                 for doc in self.docs.values_mut() {
                     doc.pages.clear();
                 }
-                self.bitmap = None;
+                self.bitmaps.clear();
             }
             Command::Shutdown => return false,
         }
@@ -360,7 +362,7 @@ impl<'p> Worker<'p> {
         let started = Instant::now();
         let Worker {
             docs,
-            bitmap,
+            bitmaps,
             commands,
             queue,
             generation,
@@ -376,8 +378,11 @@ impl<'p> Worker<'p> {
             .get(key.page as usize)
             .ok_or(EngineError::PageOutOfRange(key.page))?;
         let page_px = geometry::page_px_size(size, key.scale);
-        let rect =
-            geometry::tile_rect(page_px, key.tx, key.ty).ok_or(EngineError::TileOutOfRange)?;
+        let rect = geometry::tile_rect(page_px, key.size, key.tx, key.ty)
+            .ok_or(EngineError::TileOutOfRange)?;
+        if !geometry::is_valid_tile_size(key.size) {
+            return Err(EngineError::TileOutOfRange);
+        }
         let known_images = doc.has_images.get(&key.page).copied();
         let page = doc.page(key.page, *page_cache)?;
         let has_images = known_images.unwrap_or_else(|| page_has_images(page));
@@ -388,11 +393,11 @@ impl<'p> Worker<'p> {
             Quality::Sharp => has_images,
         };
 
-        let bitmap = match bitmap {
-            Some(bitmap) => bitmap,
-            empty => empty.insert(PdfBitmap::empty(
-                TILE_SIZE as Pixels,
-                TILE_SIZE as Pixels,
+        let bitmap = match bitmaps.entry(key.size) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(PdfBitmap::empty(
+                key.size as Pixels,
+                key.size as Pixels,
                 PdfBitmapFormat::BGRA,
             )?),
         };
@@ -523,7 +528,7 @@ fn render_tile(
     }
 
     let raw = bitmap.as_raw_bytes();
-    let stride = raw.len() / TILE_SIZE as usize;
+    let stride = raw.len() / bitmap.height() as usize;
     let row_bytes = rect.width as usize * 4;
     let mut rgba = Vec::with_capacity(row_bytes * rect.height as usize);
     for row in raw.chunks_exact(stride).take(rect.height as usize) {

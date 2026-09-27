@@ -264,6 +264,7 @@ fn put_key(b: &mut Vec<u8>, key: &TileKey) {
     put_u32(b, key.scale.to_bits());
     put_u32(b, key.tx);
     put_u32(b, key.ty);
+    put_u32(b, key.size);
 }
 
 fn quality_byte(q: Quality) -> u8 {
@@ -332,6 +333,7 @@ impl<'a> Reader<'a> {
             scale: Scale::from_bits(self.u32()?),
             tx: self.u32()?,
             ty: self.u32()?,
+            size: self.u32()?,
         })
     }
 }
@@ -347,6 +349,7 @@ mod tests {
             scale: Scale::from_px_per_pt(1.5),
             tx: 2,
             ty: 5,
+            size: crate::geometry::SMALL_TILE_SIZE,
         }
     }
 

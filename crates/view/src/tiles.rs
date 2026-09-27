@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use pdf_engine::{TILE_SIZE, TileKey};
+use pdf_engine::TileKey;
 
-/// Tile columns and rows of a page that overlap the viewport.
+/// Columns and rows of `tile_size`-pixel tiles of a page that overlap the viewport.
 ///
 /// `page_origin` is the page's top-left corner relative to the viewport's top-left corner,
 /// and all values are in device pixels.
@@ -13,6 +13,7 @@ pub fn visible_tiles(
     page_px: (u32, u32),
     page_origin: (f32, f32),
     viewport_px: (f32, f32),
+    tile_size: u32,
 ) -> (Range<u32>, Range<u32>) {
     let axis = |page_len: u32, origin: f32, view_len: f32| {
         // The part of the page (in page pixels) that falls inside the viewport.
@@ -21,7 +22,7 @@ pub fn visible_tiles(
         if end <= start {
             return 0..0;
         }
-        let tile = TILE_SIZE as f32;
+        let tile = tile_size as f32;
         (start / tile).floor() as u32..(end / tile).ceil() as u32
     };
     (
@@ -73,6 +74,10 @@ impl<V> TileCache<V> {
     /// Returns the tile without marking it as used.
     pub fn peek(&self, key: &TileKey) -> Option<&V> {
         self.entries.get(key).map(|e| &e.value)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &TileKey> {
+        self.entries.keys()
     }
 
     pub fn contains(&self, key: &TileKey) -> bool {
@@ -138,34 +143,42 @@ mod tests {
             scale: Scale::from_px_per_pt(1.0),
             tx,
             ty: 0,
+            size: pdf_engine::TILE_SIZE,
         }
     }
 
     #[test]
     fn page_fully_inside_the_viewport() {
-        let (cols, rows) = visible_tiles((1190, 1684), (10.0, 10.0), (2000.0, 2000.0));
+        let (cols, rows) = visible_tiles((1190, 1684), (10.0, 10.0), (2000.0, 2000.0), 512);
         assert_eq!((cols, rows), (0..3, 0..4));
     }
 
     #[test]
     fn page_scrolled_partly_out_of_view() {
         // Top 1100 px of the page are above the viewport, which is 600 px tall.
-        let (cols, rows) = visible_tiles((1190, 1684), (0.0, -1100.0), (1190.0, 600.0));
+        let (cols, rows) = visible_tiles((1190, 1684), (0.0, -1100.0), (1190.0, 600.0), 512);
         assert_eq!(cols, 0..3);
         assert_eq!(rows, 2..4);
     }
 
     #[test]
     fn page_below_or_above_the_viewport_has_no_tiles() {
-        let (_, rows) = visible_tiles((1190, 1684), (0.0, 700.0), (1190.0, 600.0));
+        let (_, rows) = visible_tiles((1190, 1684), (0.0, 700.0), (1190.0, 600.0), 512);
         assert!(rows.is_empty());
-        let (_, rows) = visible_tiles((1190, 1684), (0.0, -2000.0), (1190.0, 600.0));
+        let (_, rows) = visible_tiles((1190, 1684), (0.0, -2000.0), (1190.0, 600.0), 512);
         assert!(rows.is_empty());
     }
 
     #[test]
+    fn small_tiles_cover_the_same_area_with_a_finer_grid() {
+        let (cols, rows) = visible_tiles((1190, 1684), (0.0, -1100.0), (1190.0, 600.0), 256);
+        assert_eq!(cols, 0..5);
+        assert_eq!(rows, 4..7);
+    }
+
+    #[test]
     fn exact_tile_boundaries_do_not_add_extra_tiles() {
-        let (_, rows) = visible_tiles((512, 2048), (0.0, -512.0), (512.0, 512.0));
+        let (_, rows) = visible_tiles((512, 2048), (0.0, -512.0), (512.0, 512.0), 512);
         assert_eq!(rows, 1..2);
     }
 
