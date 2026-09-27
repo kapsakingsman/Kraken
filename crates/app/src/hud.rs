@@ -13,6 +13,8 @@ const TEST_FRAMES: usize = 20_000;
 
 pub struct Hud {
     pub visible: bool,
+    /// The GPU drawing the window, see `gpu_description`.
+    gpu: String,
     live: FrameStats,
     test: Option<FrameStats>,
     last_test: Option<FrameSummary>,
@@ -26,9 +28,10 @@ pub enum HudAction {
 }
 
 impl Hud {
-    pub fn new() -> Self {
+    pub fn new(gpu: String) -> Self {
         Hud {
             visible: true,
+            gpu,
             live: FrameStats::new(LIVE_FRAMES),
             test: None,
             last_test: None,
@@ -90,6 +93,7 @@ impl Hud {
                             }
                         }
                         ui.label(RichText::new(tiles).monospace());
+                        ui.label(RichText::new(format!("gpu      {}", self.gpu)).monospace());
                         ui.separator();
                         if test_running {
                             ui.label("Scroll test running...");

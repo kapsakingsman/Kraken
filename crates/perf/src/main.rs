@@ -90,6 +90,26 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// Notes once which GPU the app drew with, and flags software rendering on a run that
+    /// is supposed to use a real GPU (its frame timing would be meaningless).
+    fn note_gpu(&mut self, report: &Value) {
+        let Some(gpu) = report["gpu"].as_str() else {
+            return;
+        };
+        let note = format!("App drew with: {gpu}");
+        if self.report.notes.contains(&note) {
+            return;
+        }
+        self.report.notes.push(note);
+        if self.real_gpu && gpu.contains("SOFTWARE") {
+            self.report.notes.push(
+                "WARNING: the app ran without GPU acceleration although --gpu real was \
+                 given; frame timing reflects software rendering."
+                    .into(),
+            );
+        }
+    }
+
     fn add(&mut self, name: &str, value: f64, unit: &'static str) {
         self.report
             .add(self.budgets, self.real_gpu, name, value, unit);
@@ -321,6 +341,7 @@ fn startup_scenario(app: &Path, pdf: &Path, out: &Path, ctx: &mut Ctx) -> Result
     for run in 0..STARTUP_RUNS {
         let path = out.join(format!("app-startup-{}.json", run + 1));
         let (spawned, report, samples) = run_app(app, "startup", pdf, &path)?;
+        ctx.note_gpu(&report);
         rss.extend(samples.iter().map(|s| s.rss_mb));
         let first_page = report["first_page_unix_ms"].as_f64().unwrap_or(f64::NAN);
         totals.push(first_page - spawned);
@@ -379,6 +400,7 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
     }
     let report_path = out.join(format!("app-{scenario}.json"));
     let (_, report, samples) = run_app(app, scenario, pdf, &report_path)?;
+    ctx.note_gpu(&report);
     let rss: Vec<f64> = samples.iter().map(|s| s.rss_mb).collect();
     let mut soak_peaks = Vec::new();
 

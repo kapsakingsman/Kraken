@@ -77,7 +77,7 @@ pub struct ViewerApp {
 }
 
 impl ViewerApp {
-    pub fn new(cc: &eframe::CreationContext, path: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext, path: Option<PathBuf>, gpu: String) -> Self {
         // Ctrl+plus/minus zoom the document, not egui's own UI scale.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let ctx = cc.egui_ctx.clone();
@@ -104,12 +104,12 @@ impl ViewerApp {
             render_scale: None,
             render_complete: false,
             current_page: 0,
-            hud: Hud::new(),
+            hud: Hud::new(gpu.clone()),
             tiles: TileManager::new(),
             auto_scroll: None,
             opening: None,
             #[cfg(feature = "automation")]
-            automation: crate::automation::Automation::from_env(),
+            automation: crate::automation::Automation::from_env(gpu),
         };
         if let Some(path) = path {
             app.open(path, &cc.egui_ctx);

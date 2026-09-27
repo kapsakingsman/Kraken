@@ -96,6 +96,8 @@ fn scenario(name: &str) -> Option<Vec<Phase>> {
 }
 
 pub struct Automation {
+    /// The GPU drawing the window, see `gpu_description`.
+    gpu: String,
     scenario_name: String,
     report_path: Option<PathBuf>,
     phases: Vec<Phase>,
@@ -132,7 +134,7 @@ pub struct FrameState {
 }
 
 impl Automation {
-    pub fn from_env() -> Option<Self> {
+    pub fn from_env(gpu: String) -> Option<Self> {
         let name = std::env::var("KRAKEN_AUTOMATION").ok()?;
         mark("app_ready");
         let (phases, failure) = match scenario(&name) {
@@ -140,6 +142,7 @@ impl Automation {
             None => (vec![], Some(format!("unknown scenario {name}"))),
         };
         Some(Automation {
+            gpu,
             scenario_name: name,
             report_path: std::env::var_os("KRAKEN_PERF_REPORT").map(PathBuf::from),
             phases,
@@ -320,6 +323,7 @@ impl Automation {
         render_ms.sort_by(f32::total_cmp);
         let report = json!({
             "scenario": self.scenario_name,
+            "gpu": self.gpu,
             "ok": self.failure.is_none(),
             "failure": self.failure,
             "open_ms": self.opened_ms,

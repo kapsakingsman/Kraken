@@ -38,9 +38,28 @@ fn main() -> eframe::Result {
             // eframe has created the window, the GPU device and the fonts by now.
             #[cfg(feature = "automation")]
             automation::mark("window_and_gpu");
-            Ok(Box::new(app::ViewerApp::new(cc, path)))
+            let gpu = gpu_description(cc);
+            Ok(Box::new(app::ViewerApp::new(cc, path, gpu)))
         }),
     )
+}
+
+/// Which GPU and graphics API draw the window, e.g. "NVIDIA GeForce RTX 3060
+/// (discrete GPU, Dx12)". A "CPU" device type means software rendering (Microsoft Basic
+/// Render Driver / WARP, or llvmpipe): no hardware acceleration.
+pub fn gpu_description(cc: &eframe::CreationContext) -> String {
+    let Some(state) = &cc.wgpu_render_state else {
+        return "unknown".into();
+    };
+    let info = state.adapter.get_info();
+    let kind = match info.device_type {
+        eframe::wgpu::DeviceType::DiscreteGpu => "discrete GPU",
+        eframe::wgpu::DeviceType::IntegratedGpu => "integrated GPU",
+        eframe::wgpu::DeviceType::VirtualGpu => "virtual GPU",
+        eframe::wgpu::DeviceType::Cpu => "SOFTWARE, no GPU acceleration",
+        eframe::wgpu::DeviceType::Other => "other",
+    };
+    format!("{} ({kind}, {:?})", info.name, info.backend)
 }
 
 /// On Windows, use only Direct3D 12. By default wgpu also sets up Vulkan and OpenGL to pick
