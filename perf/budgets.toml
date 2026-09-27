@@ -1,0 +1,56 @@
+# Performance budgets checked by perf-runner (crates/perf).
+#
+#   max = the value must not be higher     min = the value must not be lower
+#   real_gpu_only = only enforced on a machine with a real GPU (frame timing means nothing
+#                   under software rendering, e.g. on CI runners)
+#
+# Change a budget only together with a measurement that justifies it.
+
+[engine]
+# Opening the 500-page fixture (parse the file, read every page size).
+open_500_pages_ms = { max = 250 }
+
+# 512x512 tiles at 150% zoom on a 150% display.
+[engine.text]
+tile_p95_ms = { max = 15 }
+pages_per_s = { min = 20 }
+[engine.vector]
+# ~20,000 path segments per page, like a dense technical drawing.
+page_max_ms = { max = 1500 }
+[engine.image]
+page_max_ms = { max = 1500 }
+
+[app.startup]
+# From starting the process to the first page drawn sharp (includes window and GPU setup).
+first_page_ms = { max = 3000 }
+peak_rss_mb = { max = 400 }
+
+[app.scroll]
+peak_rss_mb = { max = 500 }
+missed_frames_pct = { max = 1.0, real_gpu_only = true }
+ui_cpu_p99_ms = { max = 3.0, real_gpu_only = true }
+frame_p99_ms = { max = 10.4, real_gpu_only = true }  # 1.5 frames at 144 Hz
+
+[app.zoom]
+# Zooming 100% -> 800% -> 50%. Was 918 MB before stale tiles were dropped and tile
+# requests paused during the gesture; 172 MB after.
+peak_rss_mb = { max = 400 }
+missed_frames_pct = { max = 1.0, real_gpu_only = true }
+ui_cpu_p99_ms = { max = 3.0, real_gpu_only = true }
+
+[app.idle]
+# With nothing happening the app must not draw or use CPU (battery life). Measured over 5 s,
+# starting 1 s after the last activity, once prefetching has finished.
+process_cpu_pct = { max = 1.0 }
+frames = { max = 2 }
+
+[app.tour]
+# Scrolling through all 500 pages: the tile cache must hold memory at its budget.
+tile_cache_peak_mb = { max = 300 }
+peak_rss_mb = { max = 900 }
+
+[app.soak]
+# Five zoom sweeps in one process. After the first round fills the caches, memory must stay
+# flat; steady growth means a leak.
+peak_rss_mb = { max = 500 }
+growth_after_round_2_mb = { max = 32 }

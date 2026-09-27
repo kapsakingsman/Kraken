@@ -89,6 +89,15 @@ the same tile pipeline.
 3. Run `render` with `--zoom 200` and your display scale, then open the PNG at 100% (actual size,
    not "fit to window") and compare the same area.
 
+## Performance tests
+
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md). In short:
+
+```powershell
+cargo build --release -p kraken-pdf --features automation
+cargo run --release -p perf
+```
+
 ## Project layout
 
 | Path | What it is |
@@ -97,6 +106,8 @@ the same tile pipeline.
 | `crates/view` | UI-independent viewer logic: page layout, smooth scrolling, frame statistics |
 | `crates/app` | `kraken-pdf`, the desktop app (eframe/egui on wgpu) |
 | `crates/cli` | `pdf-cli`: `info`, `render` and `bench` commands |
+| `crates/perf` | Performance tests: criterion benchmarks and `perf-runner` (not shipped) |
+| `perf/budgets.toml` | Performance budgets that `perf-runner` enforces |
 | `scripts/` | Downloads PDFium. The version and SHA-256 checksums are pinned in `scripts/pdfium.lock` |
 | `vendor/pdfium` | Downloaded PDFium (not committed) |
 

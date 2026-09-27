@@ -27,7 +27,26 @@ pub struct TileManager {
     wanted: Vec<TileRequest>,
     last_wanted: Vec<TileKey>,
     generation: u64,
+    stats: TileStats,
 }
+
+/// Counters for performance reports.
+#[derive(Clone, Debug, Default)]
+pub struct TileStats {
+    /// Tiles received from the engine.
+    pub rendered: u64,
+    /// Engine render time of the most recent tiles, in milliseconds.
+    pub render_ms: VecDeque<f32>,
+    pub peak_cache_bytes: usize,
+    /// Most finished tiles ever waiting for upload at once, and their bytes.
+    pub peak_ready: usize,
+    pub peak_ready_bytes: usize,
+    /// Finished tiles thrown away because the view had moved on.
+    pub discarded: u64,
+}
+
+/// How many recent render times [`TileStats`] keeps.
+const RENDER_TIMES_KEPT: usize = 10_000;
 
 impl TileManager {
     pub fn new() -> Self {
@@ -39,6 +58,7 @@ impl TileManager {
             wanted: Vec::new(),
             last_wanted: Vec::new(),
             generation: 0,
+            stats: TileStats::default(),
         }
     }
 
@@ -46,9 +66,40 @@ impl TileManager {
     pub fn begin_frame(&mut self, engine: &Engine, ctx: &egui::Context) {
         self.cache.begin_frame();
         for result in engine.results().try_iter() {
+            if let Ok(tile) = &result.tile {
+                self.stats.rendered += 1;
+                if self.stats.render_ms.len() == RENDER_TIMES_KEPT {
+                    self.stats.render_ms.pop_front();
+                }
+                self.stats
+                    .render_ms
+                    .push_back(tile.render_time.as_secs_f32() * 1000.0);
+            }
             self.ready_keys.insert(result.key);
             self.ready.push_back(result);
         }
+        // Tiles the view no longer asks for (it scrolled or zoomed on while they rendered)
+        // would only cost upload time and memory.
+        let before = self.ready.len();
+        let wanted = &self.last_wanted;
+        let ready_keys = &mut self.ready_keys;
+        self.ready.retain(|r| {
+            let keep = wanted.binary_search(&r.key).is_ok();
+            if !keep {
+                ready_keys.remove(&r.key);
+            }
+            keep
+        });
+        self.stats.discarded += (before - self.ready.len()) as u64;
+
+        self.stats.peak_ready = self.stats.peak_ready.max(self.ready.len());
+        let ready_bytes: usize = self
+            .ready
+            .iter()
+            .map(|r| r.tile.as_ref().map_or(0, |t| t.rgba.len()))
+            .sum();
+        self.stats.peak_ready_bytes = self.stats.peak_ready_bytes.max(ready_bytes);
+
         let mut uploaded = 0;
         while uploaded < UPLOADS_PER_FRAME {
             let Some(result) = self.ready.pop_front() else {
@@ -61,6 +112,8 @@ impl TileManager {
                     let texture =
                         ctx.load_texture("page tile", color_image(tile), TextureOptions::LINEAR);
                     self.cache.insert(result.key, texture, bytes);
+                    self.stats.peak_cache_bytes =
+                        self.stats.peak_cache_bytes.max(self.cache.bytes());
                     uploaded += 1;
                 }
                 Err(_) => {
@@ -111,6 +164,12 @@ impl TileManager {
         self.last_wanted = keys;
     }
 
+    /// True while tiles are requested or waiting to be uploaded, including prefetching.
+    #[cfg_attr(not(feature = "automation"), allow(dead_code))]
+    pub fn has_pending_work(&self) -> bool {
+        !self.last_wanted.is_empty() || !self.ready.is_empty()
+    }
+
     /// True while there is work that needs more frames to show up.
     pub fn is_busy(&self) -> bool {
         !self.ready.is_empty()
@@ -122,6 +181,11 @@ impl TileManager {
         self.ready_keys.clear();
         self.failed.clear();
         self.last_wanted.clear();
+    }
+
+    #[cfg_attr(not(feature = "automation"), allow(dead_code))]
+    pub fn stats(&self) -> &TileStats {
+        &self.stats
     }
 
     pub fn status(&self) -> String {

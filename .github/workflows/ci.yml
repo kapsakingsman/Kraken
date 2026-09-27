@@ -41,7 +41,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
         run: cargo test --workspace
@@ -51,10 +51,47 @@ jobs:
         run: |
           cargo run --release -p pdf-cli -- bench crates/engine/tests/data/sample.pdf --zoom 200
 
-      - name: App smoke test (opens the window, scrolls 300 frames, closes)
+      - name: App smoke test (opens the window, scrolls, zooms, closes)
         if: runner.os == 'Windows'
         timeout-minutes: 15
         shell: bash
         env:
-          KRAKEN_SMOKE_TEST_FRAMES: "300"
-        run: cargo run --release -p kraken-pdf -- crates/engine/tests/data/sample.pdf
+          KRAKEN_AUTOMATION: smoke
+        run: cargo run --release -p kraken-pdf --features automation -- crates/engine/tests/data/sample.pdf
+
+  perf:
+    # Engine and app performance against perf/budgets.toml. CI runners have no GPU, so frame
+    # timing is reported but only CPU, memory and speed budgets are enforced here.
+    name: performance (windows-latest, software GPU)
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Fetch PDFium
+        shell: pwsh
+        run: ./scripts/fetch-pdfium.ps1
+
+      - name: Build the app with automation hooks
+        run: cargo build --release -p kraken-pdf --features automation
+
+      - name: Run perf-runner
+        timeout-minutes: 40
+        run: cargo run --release -p perf -- --gpu software
+
+      - name: Add the report to the job summary
+        if: always()
+        shell: bash
+        run: cat target/perf-report/report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-report
+          path: |
+            target/perf-report/*.md
+            target/perf-report/*.json

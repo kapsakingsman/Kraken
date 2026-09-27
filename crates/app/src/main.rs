@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+#[cfg(feature = "automation")]
+mod automation;
 mod hud;
 mod tiles;
 

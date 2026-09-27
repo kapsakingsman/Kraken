@@ -70,9 +70,8 @@ pub struct ViewerApp {
     auto_scroll: Option<AutoScroll>,
     opening: Option<Receiver<OpenResult>>,
     message: Option<String>,
-    /// Set by `KRAKEN_SMOKE_TEST_FRAMES`: scroll for this many frames, then close. CI uses
-    /// it to check that the window starts and draws on a real Windows machine.
-    smoke_frames_left: Option<u32>,
+    #[cfg(feature = "automation")]
+    automation: Option<crate::automation::Automation>,
 }
 
 impl ViewerApp {
@@ -105,13 +104,9 @@ impl ViewerApp {
             tiles: TileManager::new(),
             auto_scroll: None,
             opening: None,
-            smoke_frames_left: std::env::var("KRAKEN_SMOKE_TEST_FRAMES")
-                .ok()
-                .and_then(|v| v.parse().ok()),
+            #[cfg(feature = "automation")]
+            automation: crate::automation::Automation::from_env(),
         };
-        if app.smoke_frames_left.is_some() {
-            app.auto_scroll = Some(AutoScroll::new(f32::MAX, SCROLL_TEST_SPEED));
-        }
         if let Some(path) = path {
             app.open(path, &cc.egui_ctx);
         }
@@ -413,6 +408,24 @@ impl ViewerApp {
             )
         });
 
+        #[cfg(feature = "automation")]
+        let automating = match &mut self.automation {
+            Some(automation) => automation.drive(
+                &mut self.camera,
+                &crate::automation::FrameState {
+                    document_open: self.document.id.is_some(),
+                    render_complete: self.render_complete,
+                    tiles_pending: self.tiles.has_pending_work(),
+                    content,
+                    view,
+                    dt,
+                },
+            ),
+            None => false,
+        };
+        #[cfg(not(feature = "automation"))]
+        let automating = false;
+
         if let Some(test) = &mut self.auto_scroll
             && !test.step(dt, &mut self.camera.y, max_y)
         {
@@ -526,7 +539,10 @@ impl ViewerApp {
             {
                 draw(fallback, None);
             }
-            missing += draw(render_scale, Some(tile_priority));
+            // While a zoom gesture is in progress the existing tiles are stretched; asking
+            // for more tiles at a scale about to be replaced would only waste rendering.
+            let settled = render_scale == display_scale;
+            missing += draw(render_scale, settled.then_some(tile_priority));
         }
         self.current_page = layout.page_at(top + view_h_pt / 2.0);
         if missing == 0 && self.document.id.is_some() {
@@ -539,7 +555,7 @@ impl ViewerApp {
             paint_scrollbar(&painter, h_bar, thumb);
         }
 
-        moving || zooming
+        moving || zooming || automating
     }
 }
 
@@ -609,11 +625,9 @@ impl eframe::App for ViewerApp {
             self.open(path, &ctx);
         }
 
-        if let Some(left) = &mut self.smoke_frames_left {
-            if *left == 0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            *left = left.saturating_sub(1);
+        #[cfg(feature = "automation")]
+        if let Some(automation) = &mut self.automation {
+            automation.end_frame(&ctx, frame.info().cpu_usage, self.tiles.stats());
         }
 
         let animating = moving || self.auto_scroll.is_some();
