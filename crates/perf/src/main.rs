@@ -1,7 +1,6 @@
 //! perf-runner: measures the engine and the real app process against `perf/budgets.toml`.
 //!
 //! ```text
-//! cargo build --release -p kraken-pdf --features automation
 //! cargo run --release -p perf -- --suite all
 //! ```
 //!
@@ -43,7 +42,8 @@ struct Args {
     )]
     scenarios: Vec<String>,
 
-    /// The app, built with `--features automation`. Defaults to target/release/kraken-pdf.
+    /// The app, built with `--features automation`. By default perf-runner builds it into
+    /// target/perf-app.
     #[arg(long)]
     app: Option<PathBuf>,
 
@@ -130,16 +130,12 @@ fn main() -> Result<()> {
         }
     }
     if matches!(args.suite, Suite::All | Suite::App) {
-        let app = args.app.clone().unwrap_or_else(|| {
-            root.join("target")
-                .join("release")
-                .join(format!("kraken-pdf{}", std::env::consts::EXE_SUFFIX))
-        });
+        let app = match args.app.clone() {
+            Some(app) => app,
+            None => build_app(&root)?,
+        };
         if !app.is_file() {
-            bail!(
-                "{} not found. Build it first:\n  cargo build --release -p kraken-pdf --features automation",
-                app.display()
-            );
+            bail!("{} not found", app.display());
         }
         let pdf = args.pdf.clone().unwrap_or_else(|| fixtures.text.clone());
         if args.pdf.is_some() {
@@ -251,6 +247,36 @@ struct Sample {
     rss_mb: f64,
 }
 
+/// Builds the app with the `automation` feature into its own target folder, so a normal
+/// `cargo run -p kraken-pdf` (which rebuilds target/release/kraken-pdf without the feature)
+/// can never replace the binary being measured.
+fn build_app(root: &Path) -> Result<PathBuf> {
+    let target_dir = root.join("target").join("perf-app");
+    println!("Building the app with automation hooks...");
+    // Set by cargo when perf-runner itself runs through `cargo run`.
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = Command::new(cargo)
+        .current_dir(root)
+        .args([
+            "build",
+            "--release",
+            "-p",
+            "kraken-pdf",
+            "--features",
+            "automation",
+        ])
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .status()
+        .context("running cargo build")?;
+    if !status.success() {
+        bail!("building the app failed");
+    }
+    Ok(target_dir
+        .join("release")
+        .join(format!("kraken-pdf{}", std::env::consts::EXE_SUFFIX)))
+}
+
 /// Starts the app for one scenario and waits for it to finish. Returns when it was
 /// started, its report, and the CPU/memory samples taken meanwhile.
 fn run_app(
@@ -269,8 +295,10 @@ fn run_app(
         .with_context(|| format!("starting {}", app.display()))?;
     let samples = sample_until_exit(child)?;
 
-    let text = std::fs::read_to_string(report_path)
-        .context("the app exited without writing its report")?;
+    let text = std::fs::read_to_string(report_path).context(
+        "the app exited without writing its report (was it built with \
+             `--features automation`?)",
+    )?;
     let report: Value = serde_json::from_str(&text)?;
     if report["ok"] != Value::Bool(true) {
         bail!("{}", report["failure"]);

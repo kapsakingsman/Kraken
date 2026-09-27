@@ -94,7 +94,6 @@ the same tile pipeline.
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md). In short:
 
 ```powershell
-cargo build --release -p kraken-pdf --features automation
 cargo run --release -p perf
 ```
 

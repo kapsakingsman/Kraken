@@ -16,10 +16,9 @@ do not include.
 ## Running it
 
 ```powershell
-# 1. Build the app with the scripting hook (normal builds do not have it).
-cargo build --release -p kraken-pdf --features automation
-
-# 2. Run everything: fixtures are generated, then the engine and app suites run.
+# Run everything: perf-runner builds the app with its scripting hook (into
+# target/perf-app, separate from normal builds), generates the fixtures, then runs the
+# engine and app suites.
 cargo run --release -p perf
 
 # Only some parts:
