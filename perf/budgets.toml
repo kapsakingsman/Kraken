@@ -46,18 +46,24 @@ ui_cpu_p99_ms = { max = 3.0, real_gpu_only = true }
 # 80 ms wait that makes sure the gesture really ended.
 after_zoom_p50_ms = { max = 250, real_gpu_only = true }
 after_zoom_max_ms = { max = 400, real_gpu_only = true }
+# Every tile rendered once: re-requests of a tile already on its way are skipped.
+tiles_duplicated = { max = 0 }
 
 [app.wheel]
 # From a Ctrl+wheel notch until every visible tile is sharp at the new zoom step. A notch is
 # a finished gesture, so there is no wait: like Acrobat, rendering starts right away.
 after_notch_p50_ms = { max = 150, real_gpu_only = true }
 after_notch_max_ms = { max = 300, real_gpu_only = true }
+# Every tile rendered once: re-requests of a tile already on its way are skipped.
+tiles_duplicated = { max = 0 }
 
 [app.spin]
 # Fast Ctrl+wheel spins (8 notches, one every 60 ms). Each zoom step passed through is
 # rendered, so this also watches the memory those extra tiles take.
 after_spin_p50_ms = { max = 150, real_gpu_only = true }
 peak_rss_mb = { max = 500 }
+# Every tile rendered once: re-requests of a tile already on its way are skipped.
+tiles_duplicated = { max = 0 }
 
 [app.idle]
 # With nothing happening the app must not draw or use CPU (battery life). Measured over 5 s,
@@ -70,6 +76,8 @@ frames = { max = 2 }
 # Scrolling through all 500 pages: the tile cache must hold memory at its budget.
 tile_cache_peak_mb = { max = 300 }
 peak_rss_mb = { max = 900 }
+# Every tile rendered once: re-requests of a tile already on its way are skipped.
+tiles_duplicated = { max = 0 }
 
 [app.soak]
 # Five zoom sweeps in one process. After the first round fills the caches, memory must stay

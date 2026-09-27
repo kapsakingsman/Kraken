@@ -10,7 +10,7 @@ use pdfium_render::prelude::*;
 
 use crate::geometry::{self, PageSize, TILE_SIZE, TileRect};
 use crate::queue::TileQueue;
-use crate::{DocId, DocInfo, EngineError, Quality, Tile, TileRequest, TileResult};
+use crate::{DocId, DocInfo, EngineError, Quality, Tile, TileKey, TileRequest, TileResult};
 
 pub struct EngineConfig {
     /// Folder containing the PDFium library. `None` uses [`crate::locate_pdfium`].
@@ -41,6 +41,7 @@ enum Command {
     Wanted {
         generation: u64,
         requests: Vec<TileRequest>,
+        results_read: Option<u64>,
     },
     Shutdown,
 }
@@ -102,6 +103,7 @@ impl Engine {
                     page_cache,
                     bitmap: None,
                     deferred: Vec::new(),
+                    delivered: Delivered::default(),
                 }
                 .run();
             })?;
@@ -151,11 +153,22 @@ impl Engine {
     /// Unlike [`Engine::set_generation`] followed by [`Engine::request_tile`], the engine sees
     /// the whole set at once, so it can also abandon a tile it is rendering right now when
     /// the new set no longer contains it (for example a zoom step the user has already
-    /// zoomed past). A tile abandoned this way produces no result.
-    pub fn set_wanted(&self, generation: u64, requests: Vec<TileRequest>) {
+    /// zoomed past). A tile abandoned this way is reported as [`EngineError::Cancelled`].
+    ///
+    /// `results_read` is how many results the caller has taken from [`Engine::results`] so
+    /// far. A caller that asks for a tile again because it has not read the result yet would
+    /// otherwise get it rendered twice; with this count the engine skips such requests.
+    /// `None` turns the check off.
+    pub fn set_wanted(
+        &self,
+        generation: u64,
+        requests: Vec<TileRequest>,
+        results_read: Option<u64>,
+    ) {
         let _ = self.send(Command::Wanted {
             generation,
             requests,
+            results_read,
         });
     }
 
@@ -194,6 +207,42 @@ struct Worker<'p> {
     /// Commands that arrived during a render and must wait until it is over (they may
     /// close the document being rendered).
     deferred: Vec<Command>,
+    delivered: Delivered,
+}
+
+/// Results sent back, numbered in sending order, remembering which tiles the recent ones
+/// carried. A request made before the caller read such a result is a duplicate.
+#[derive(Default)]
+struct Delivered {
+    sent: u64,
+    recent: std::collections::VecDeque<(u64, TileKey, Quality)>,
+}
+
+impl Delivered {
+    /// How many recent results are remembered; far more than can be in flight at once.
+    const REMEMBERED: usize = 1024;
+
+    fn record(&mut self, key: TileKey, quality: Quality, rendered: bool) {
+        if rendered {
+            if self.recent.len() == Self::REMEMBERED {
+                self.recent.pop_front();
+            }
+            self.recent.push_back((self.sent, key, quality));
+        }
+        self.sent += 1;
+    }
+
+    /// Whether `request` asks for a tile sent in a result the caller had not read yet.
+    fn is_unread(&self, request: &TileRequest, results_read: Option<u64>) -> bool {
+        let Some(read) = results_read else {
+            return false;
+        };
+        self.recent
+            .iter()
+            .rev()
+            .take_while(|(n, _, _)| *n >= read)
+            .any(|(_, key, quality)| *key == request.key && *quality == request.quality)
+    }
 }
 
 struct OpenDoc<'p> {
@@ -233,6 +282,8 @@ impl<'p> Worker<'p> {
                 };
                 // A cancelled tile is reported too, so callers waiting for every tile they
                 // asked for are not left hanging; nobody is waiting for its pixels.
+                self.delivered
+                    .record(request.key, request.quality, tile.is_ok());
                 let result = TileResult {
                     key: request.key,
                     generation: request.generation,
@@ -277,7 +328,15 @@ impl<'p> Worker<'p> {
             Command::Wanted {
                 generation,
                 requests,
-            } => apply_wanted(&mut self.queue, &mut self.generation, generation, requests),
+                results_read,
+            } => apply_wanted(
+                &mut self.queue,
+                &mut self.generation,
+                &self.delivered,
+                generation,
+                requests,
+                results_read,
+            ),
             Command::Shutdown => return false,
         }
         true
@@ -327,6 +386,7 @@ impl<'p> Worker<'p> {
             queue,
             generation,
             deferred,
+            delivered,
             page_cache,
             ..
         } = self;
@@ -371,9 +431,10 @@ impl<'p> Worker<'p> {
                     Command::Wanted {
                         generation: g,
                         requests,
+                        results_read,
                     } => {
                         let wanted = requests.iter().any(|r| r.key == key);
-                        apply_wanted(queue, generation, g, requests);
+                        apply_wanted(queue, generation, delivered, g, requests, results_read);
                         if g >= *generation {
                             still_wanted = wanted;
                         }
@@ -396,6 +457,9 @@ impl<'p> Worker<'p> {
             !still_wanted
         };
         let rgba = render_tile(page, page_px, rect, bitmap, !draft, &mut cancel)?;
+        // Requests that arrived during a render too short for PDFium to pause are still in
+        // the channel: fold a re-request for this tile in now, or it would render twice.
+        cancel();
         doc.has_images.insert(key.page, has_images);
         let Some(rgba) = rgba else {
             return Ok(None);
@@ -411,12 +475,15 @@ impl<'p> Worker<'p> {
     }
 }
 
-/// Starts `generation` and queues its tiles.
+/// Starts `generation` and queues its tiles, except those already sent in a result the
+/// caller had not read yet.
 fn apply_wanted(
     queue: &mut TileQueue,
     current: &mut u64,
+    delivered: &Delivered,
     generation: u64,
     requests: Vec<TileRequest>,
+    results_read: Option<u64>,
 ) {
     if generation < *current {
         return;
@@ -424,6 +491,9 @@ fn apply_wanted(
     *current = generation;
     queue.drop_older_than(generation);
     for request in requests {
+        if delivered.is_unread(&request, results_read) {
+            continue;
+        }
         queue.push(TileRequest {
             generation,
             ..request

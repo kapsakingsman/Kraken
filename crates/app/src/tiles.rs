@@ -33,6 +33,9 @@ pub struct TileManager {
     wanted: Vec<TileRequest>,
     last_wanted: Vec<TileKey>,
     generation: u64,
+    /// Results taken from the engine so far, so it can skip requests for tiles it has
+    /// already sent (see `Engine::set_wanted`).
+    results_read: u64,
     stats: TileStats,
 }
 
@@ -51,6 +54,9 @@ pub struct TileStats {
     pub discarded: u64,
     /// Tiles the engine stopped rendering part way because the view had moved on.
     pub cancelled: u64,
+    /// Tiles rendered although an equal one was already cached or waiting for upload:
+    /// wasted work that should stay at 0.
+    pub duplicates: u64,
 }
 
 /// How many recent render times [`TileStats`] keeps.
@@ -66,6 +72,7 @@ impl TileManager {
             wanted: Vec::new(),
             last_wanted: Vec::new(),
             generation: 0,
+            results_read: 0,
             stats: TileStats::default(),
         }
     }
@@ -74,11 +81,19 @@ impl TileManager {
     pub fn begin_frame(&mut self, engine: &Engine, ctx: &egui::Context) {
         self.cache.begin_frame();
         for result in engine.results().try_iter() {
+            self.results_read += 1;
             if matches!(result.tile, Err(EngineError::Cancelled)) {
                 self.stats.cancelled += 1;
                 continue;
             }
             if let Ok(tile) = &result.tile {
+                // A final render replacing a cached draft is expected; anything else that is
+                // already here was rendered twice.
+                let duplicate = match self.cache.peek(&result.key) {
+                    Some((_, cached_is_draft)) => !(*cached_is_draft && !tile.draft),
+                    None => self.ready_keys.contains(&result.key),
+                };
+                self.stats.duplicates += u64::from(duplicate);
                 self.stats.rendered += 1;
                 if self.stats.render_ms.len() == RENDER_TIMES_KEPT {
                     self.stats.render_ms.pop_front();
@@ -179,7 +194,11 @@ impl TileManager {
             return;
         }
         self.generation += 1;
-        engine.set_wanted(self.generation, self.wanted.clone());
+        engine.set_wanted(
+            self.generation,
+            self.wanted.clone(),
+            Some(self.results_read),
+        );
         self.last_wanted = keys;
     }
 

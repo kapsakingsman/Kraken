@@ -543,10 +543,10 @@ fn a_tile_nobody_wants_any_more_stops_rendering_part_way() {
     let full = started.elapsed();
 
     // Start the slow tile, then ask for a different set of tiles while it renders.
-    engine.set_wanted(1, vec![request(key(0, 2.02))]);
+    engine.set_wanted(1, vec![request(key(0, 2.02))], None);
     std::thread::sleep(full / 4);
     let switched = std::time::Instant::now();
-    engine.set_wanted(2, vec![request(key(1, 2.0))]);
+    engine.set_wanted(2, vec![request(key(1, 2.0))], None);
 
     let first = engine.results().recv_timeout(TIMEOUT).unwrap();
     let stopped_after = switched.elapsed();
@@ -585,10 +585,10 @@ fn a_tile_still_wanted_is_finished_once_not_twice() {
         priority: 0,
         quality: Quality::Final,
     };
-    engine.set_wanted(1, vec![request(0)]);
+    engine.set_wanted(1, vec![request(0)], None);
     std::thread::sleep(Duration::from_millis(20));
     // The view moved a little: the slow tile is still wanted, next to a new one.
-    engine.set_wanted(2, vec![request(0), request(1)]);
+    engine.set_wanted(2, vec![request(0), request(1)], None);
 
     let mut keys = Vec::new();
     for _ in 0..2 {
@@ -604,4 +604,51 @@ fn a_tile_still_wanted_is_finished_once_not_twice() {
             .is_err(),
         "the slow tile was rendered a second time"
     );
+}
+
+#[test]
+fn a_tile_asked_for_again_before_its_result_was_read_is_not_rendered_twice() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture = fixture("unread.pdf");
+    let engine = engine();
+    let doc = engine.open(&fixture.path, None).unwrap();
+    let request = |page| TileRequest {
+        key: TileKey {
+            doc: doc.id,
+            page,
+            scale: Scale::from_px_per_pt(1.0),
+            tx: 0,
+            ty: 0,
+        },
+        generation: 0,
+        priority: 0,
+        quality: Quality::Final,
+    };
+    engine.set_wanted(1, vec![request(0)], Some(0));
+    // Wait until the result is there, without reading it.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while engine.results().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "tile never arrived");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // The caller has read 0 results, so page 0 is still "missing" to it.
+    engine.set_wanted(2, vec![request(0), request(1)], Some(0));
+    let pages: Vec<u32> = (0..2)
+        .map(|_| engine.results().recv_timeout(TIMEOUT).unwrap().key.page)
+        .collect();
+    assert_eq!(pages, vec![0, 1]);
+    assert!(
+        engine
+            .results()
+            .recv_timeout(Duration::from_millis(500))
+            .is_err(),
+        "page 0 was rendered twice"
+    );
+
+    // Once the results were read, asking again (say after the cache dropped the tile)
+    // renders it again.
+    engine.set_wanted(3, vec![request(0)], Some(2));
+    let again = engine.results().recv_timeout(TIMEOUT).unwrap();
+    assert_eq!(again.key.page, 0);
+    again.tile.unwrap();
 }

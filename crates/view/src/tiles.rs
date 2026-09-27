@@ -70,6 +70,11 @@ impl<V> TileCache<V> {
         })
     }
 
+    /// Returns the tile without marking it as used.
+    pub fn peek(&self, key: &TileKey) -> Option<&V> {
+        self.entries.get(key).map(|e| &e.value)
+    }
+
     pub fn contains(&self, key: &TileKey) -> bool {
         self.entries.contains_key(key)
     }

@@ -496,6 +496,11 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
                     report["tiles"]["peak_cache_mb"].as_f64().unwrap_or(0.0),
                     "MB",
                 );
+                ctx.add(
+                    &key("tiles_duplicated"),
+                    report["tiles"]["duplicates"].as_f64().unwrap_or(0.0),
+                    "tiles",
+                );
                 let render: Vec<f64> = report["tiles"]["render_ms"]
                     .as_array()
                     .into_iter()
@@ -566,6 +571,11 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
         ctx.add(
             &format!("app.{scenario}.tiles_discarded"),
             tiles["discarded"].as_f64().unwrap_or(0.0),
+            "tiles",
+        );
+        ctx.add(
+            &format!("app.{scenario}.tiles_duplicated"),
+            tiles["duplicates"].as_f64().unwrap_or(0.0),
             "tiles",
         );
         ctx.add(
