@@ -45,6 +45,20 @@ impl TileQueue {
         None
     }
 
+    /// Removes and returns the queued request for `key` if it satisfies `accept`.
+    pub fn take_if(
+        &mut self,
+        key: &TileKey,
+        accept: impl FnOnce(&TileRequest) -> bool,
+    ) -> Option<TileRequest> {
+        let (_, request) = self.pending.get(key)?;
+        if !accept(request) {
+            return None;
+        }
+        // The heap entry becomes stale and is skipped when popped.
+        self.pending.remove(key).map(|(_, request)| request)
+    }
+
     pub fn drop_older_than(&mut self, generation: u64) {
         self.pending.retain(|_, (_, r)| r.generation >= generation);
         self.compact_if_needed();
@@ -132,6 +146,18 @@ mod tests {
         q.push(request(3, 0, 4));
         q.drop_older_than(4);
         assert_eq!(drain(&mut q, 0), vec![3]);
+    }
+
+    #[test]
+    fn take_if_removes_only_accepted_requests() {
+        let mut q = TileQueue::default();
+        q.push(request(0, 0, 0));
+        q.push(request(1, 0, 0));
+        let key = request(1, 0, 0).key;
+        assert!(q.take_if(&key, |_| false).is_none());
+        assert_eq!(q.take_if(&key, |_| true).map(|r| r.key.tx), Some(1));
+        assert!(q.take_if(&key, |_| true).is_none());
+        assert_eq!(drain(&mut q, 0), vec![0]);
     }
 
     #[test]

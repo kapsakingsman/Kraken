@@ -423,6 +423,7 @@ impl Automation {
                 "peak_ready": tiles.peak_ready,
                 "peak_ready_mb": tiles.peak_ready_bytes as f64 / (1024.0 * 1024.0),
                 "discarded": tiles.discarded,
+                "cancelled": tiles.cancelled,
             },
         });
         if let Err(e) = std::fs::write(path, report.to_string()) {

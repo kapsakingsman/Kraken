@@ -34,6 +34,11 @@ pub enum EngineError {
     #[error("the engine thread has stopped")]
     Stopped,
 
+    /// The tile was abandoned part way because a newer [`crate::Engine::set_wanted`] no
+    /// longer asked for it.
+    #[error("rendering was cancelled")]
+    Cancelled,
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
