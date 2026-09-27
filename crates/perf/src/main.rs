@@ -643,7 +643,11 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
 /// of its interval, so a short run (a fast startup) still has its peak recorded.
 fn sample_until_exit(mut child: Child) -> Result<Vec<Sample>> {
     let pid = Pid::from_u32(child.id());
+    // CPU use is the time the process ran between two refreshes of the same `System`, so
+    // the frequent memory reads use a second one: refreshing the CPU `System` every 10 ms
+    // made Windows report 250 ms of CPU time as if it had run in 10 ms.
     let mut system = System::new();
+    let mut memory = System::new();
     let full = ProcessRefreshKind::nothing().with_cpu().with_memory();
     let memory_only = ProcessRefreshKind::nothing().with_memory();
     let started = Instant::now();
@@ -667,14 +671,16 @@ fn sample_until_exit(mut child: Child) -> Result<Vec<Sample>> {
             let _ = child.kill();
             bail!("timed out after {} s", APP_TIMEOUT.as_secs());
         }
-        let now = Instant::now();
-        let full_sample = now >= next_sample;
-        let kind = if full_sample { full } else { memory_only };
+        let full_sample = Instant::now() >= next_sample;
+        memory.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, memory_only);
+        if let Some(process) = memory.process(pid) {
+            peak_mb = peak_mb.max(process.memory() as f64 / (1024.0 * 1024.0));
+        }
         let mut workers_mb = 0.0;
         if full_sample {
             // The app's render workers are its child processes.
-            system.refresh_processes_specifics(ProcessesToUpdate::All, true, memory_only);
-            workers_mb = system
+            memory.refresh_processes_specifics(ProcessesToUpdate::All, true, memory_only);
+            workers_mb = memory
                 .processes()
                 .values()
                 // On Linux the app's own threads are listed as its children too.
@@ -682,10 +688,10 @@ fn sample_until_exit(mut child: Child) -> Result<Vec<Sample>> {
                 .map(|p| p.memory() as f64 / (1024.0 * 1024.0))
                 .sum();
         }
-        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, kind);
-        if let Some(process) = system.process(pid) {
-            peak_mb = peak_mb.max(process.memory() as f64 / (1024.0 * 1024.0));
-            if full_sample {
+        if full_sample {
+            system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, full);
+            if let Some(process) = system.process(pid) {
+                peak_mb = peak_mb.max(process.memory() as f64 / (1024.0 * 1024.0));
                 samples.push(Sample {
                     unix_ms: unix_ms(),
                     cpu_pct: process.cpu_usage() as f64,
@@ -694,8 +700,6 @@ fn sample_until_exit(mut child: Child) -> Result<Vec<Sample>> {
                 });
                 peak_mb = 0.0;
             }
-        }
-        if full_sample {
             next_sample += SAMPLE_EVERY;
         }
         std::thread::sleep(MEMORY_EVERY);
