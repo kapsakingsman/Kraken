@@ -101,6 +101,8 @@ Per-frame viewer work (criterion): finding the visible pages of a 10,000-page do
 | Idle CPU | 0% |
 | Peak memory (scroll, zoom, 500-page tour) | 200 / 199 / 219 MB |
 | Memory growth over 5 zoom sweeps | 1.2 MB |
+| Zoom stop → sharp, median / slowest | 107 ms / 161 ms (80 ms of it is the gesture-end wait) |
+| Zoom: UI CPU p99 with the 12 MB upload budget | 1.31 ms |
 
 The frame budget was first a fixed 10.4 ms (1.5 frames at 144 Hz), which failed on this
 monitor running at 75 Hz, where a normal frame takes 13.3 ms. Frame timing is now judged
