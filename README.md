@@ -38,7 +38,8 @@ on the window.
 | Input | Action |
 |---|---|
 | Mouse wheel, touchpad | Scroll (wheel steps are animated, touchpad follows your fingers) |
-| Ctrl+wheel, touchpad pinch | Zoom around the mouse pointer |
+| Ctrl+wheel | Zoom one step per notch (100 → 125 → 150 …) around the mouse pointer, sharp right away |
+| Touchpad pinch | Smooth zoom around the fingers; turns sharp when they stop |
 | Ctrl+plus / Ctrl+minus | Next / previous zoom step |
 | Ctrl+0 / Ctrl+1 / Ctrl+2 | Fit page / 100% / fit width |
 | Shift+wheel | Scroll sideways (when zoomed in) |

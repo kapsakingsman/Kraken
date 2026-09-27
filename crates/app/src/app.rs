@@ -13,7 +13,7 @@ use pdf_engine::geometry::{page_px_size, tile_rect};
 use pdf_engine::{
     DocId, DocInfo, Engine, EngineConfig, PageSize, Quality, Scale, TILE_SIZE, TileKey,
 };
-use pdf_view::camera::{fit_page_zoom, fit_width_zoom, step_zoom};
+use pdf_view::camera::{fit_page_zoom, fit_width_zoom, step_zoom, wheel_notches};
 use pdf_view::{AutoScroll, Camera, DocLayout, SmoothScroll, ZoomSettle, visible_tiles};
 
 use crate::hud::{Hud, HudAction};
@@ -290,15 +290,58 @@ impl ViewerApp {
                 self.camera.zoom_around(target, center, content, view);
             }
         }
-        // Ctrl+wheel and touchpad pinch (egui smooths both into one factor per frame).
-        let (zoom_delta, hover) = ui.input(|i| (i.zoom_delta(), i.pointer.hover_pos()));
+        // Ctrl+wheel and pinch. egui's `zoom_delta` smooths Ctrl+wheel over ~0.15 s, so the
+        // zoom would keep changing after the last notch and only then render sharp. Like
+        // Acrobat, a mouse-wheel notch instead jumps to the next zoom step and renders it
+        // right away. Touchpad pinches and fractional wheel deltas zoom smoothly, stretching
+        // the current tiles until the gesture settles.
         let mut zooming = false;
-        if zoom_delta != 1.0 && response.hovered() {
+        if response.hovered() {
+            let (notches, factor, hover) = ui.input(|i| {
+                let mut notches = 0;
+                let mut factor = 1.0;
+                for event in &i.events {
+                    match event {
+                        Event::MouseWheel {
+                            unit,
+                            delta,
+                            modifiers,
+                            ..
+                        } if modifiers.command => {
+                            let d = delta.x + delta.y;
+                            match (unit, wheel_notches(d)) {
+                                (MouseWheelUnit::Line, Some(n)) => notches += n,
+                                (MouseWheelUnit::Line, None) => factor *= (d * 0.2).exp(),
+                                (MouseWheelUnit::Point, _) => factor *= (d / 200.0).exp(),
+                                (MouseWheelUnit::Page, _) => notches += d.signum() as i32,
+                            }
+                        }
+                        Event::Zoom(f) if i.multi_touch().is_none() => factor *= f,
+                        _ => {}
+                    }
+                }
+                if let Some(touch) = i.multi_touch() {
+                    factor *= touch.zoom_delta;
+                }
+                (notches, factor, i.pointer.hover_pos())
+            });
             let anchor = hover.map_or(center, |p| (p.x - rect.left(), p.y - rect.top()));
-            self.camera
-                .zoom_around(self.camera.zoom() * zoom_delta, anchor, content, view);
-            self.fit = None;
-            zooming = true;
+            if notches != 0 {
+                let mut target = self.camera.zoom();
+                for _ in 0..notches.unsigned_abs() {
+                    target = step_zoom(target, notches.signum());
+                }
+                self.camera.zoom_around(target, anchor, content, view);
+                self.settle.snap(self.camera.zoom());
+                self.fit = None;
+                zooming = true;
+            }
+            if factor != 1.0 {
+                self.camera
+                    .zoom_around(self.camera.zoom() * factor, anchor, content, view);
+                self.fit = None;
+                zooming = true;
+            }
         }
 
         // --- Scroll -------------------------------------------------------------------
@@ -569,6 +612,13 @@ impl ViewerApp {
 }
 
 impl eframe::App for ViewerApp {
+    #[cfg(feature = "automation")]
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(automation) = &mut self.automation {
+            automation.raw_input(raw_input);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.hud.begin_frame(frame.info().cpu_usage);
         let ctx = ui.ctx().clone();
