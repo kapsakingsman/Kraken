@@ -4,7 +4,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
-use pdf_engine::{Engine, TILE_SIZE, Tile, TileKey, TileRequest, TileResult};
+use pdf_engine::{Engine, Quality, TILE_SIZE, Tile, TileKey, TileRequest, TileResult};
 use pdf_view::TileCache;
 
 /// GPU memory for page tiles. A 512×512 tile takes 1 MB.
@@ -15,12 +15,17 @@ const MEMORY_BUDGET: usize = 300 * 1024 * 1024;
 /// sharp in one frame. perf-runner's `ui_cpu_p99_ms` checks that frames stay in budget.
 const UPLOAD_BYTES_PER_FRAME: usize = 12 * 1024 * 1024;
 
+/// Added to a tile's priority when asking for the final version of a draft, so every missing
+/// tile renders first.
+const REFINE_PRIORITY: u32 = 100_000;
+
 /// Scale of the page preview shown until the sharp tiles arrive (about 22 DPI): cheap
 /// enough to render for every page the moment it scrolls into view.
 const PREVIEW_PX_PER_PT: f32 = 0.3;
 
 pub struct TileManager {
-    cache: TileCache<TextureHandle>,
+    /// Textures, and whether each is a draft that a final render should replace.
+    cache: TileCache<(TextureHandle, bool)>,
     /// Finished tiles waiting for their turn to be uploaded.
     ready: VecDeque<TileResult>,
     ready_keys: HashSet<TileKey>,
@@ -110,9 +115,10 @@ impl TileManager {
             match result.tile {
                 Ok(tile) => {
                     let bytes = tile.rgba.len();
+                    let draft = tile.draft;
                     let texture =
                         ctx.load_texture("page tile", color_image(tile), TextureOptions::LINEAR);
-                    self.cache.insert(result.key, texture, bytes);
+                    self.cache.insert(result.key, (texture, draft), bytes);
                     self.stats.peak_cache_bytes =
                         self.stats.peak_cache_bytes.max(self.cache.bytes());
                     uploaded += bytes;
@@ -127,23 +133,34 @@ impl TileManager {
 
     /// Returns the tile's texture if it is ready; otherwise asks for it with the given
     /// priority (lower renders sooner).
-    pub fn get(&mut self, key: TileKey, priority: u32) -> Option<TextureHandle> {
-        if let Some(texture) = self.cache.get(&key) {
-            return Some(texture.clone());
-        }
-        if !self.failed.contains(&key) && !self.ready_keys.contains(&key) {
+    ///
+    /// A draft (a quick render without image smoothing, see [`Quality::Sharp`]) is shown
+    /// right away, and its final version is asked for at a lower priority than any tile
+    /// that is still missing.
+    pub fn get(&mut self, key: TileKey, priority: u32, quality: Quality) -> Option<TextureHandle> {
+        let cached = self.cache.get(&key).cloned();
+        let request = match &cached {
+            Some((_, true)) => Some((Quality::Final, priority + REFINE_PRIORITY)),
+            Some((_, false)) => None,
+            None => Some((quality, priority)),
+        };
+        if let Some((quality, priority)) = request
+            && !self.failed.contains(&key)
+            && !self.ready_keys.contains(&key)
+        {
             self.wanted.push(TileRequest {
                 key,
                 generation: 0,
                 priority,
+                quality,
             });
         }
-        None
+        cached.map(|(texture, _)| texture)
     }
 
     /// Returns the tile's texture if it is already cached, without requesting it.
     pub fn peek(&mut self, key: TileKey) -> Option<TextureHandle> {
-        self.cache.get(&key).cloned()
+        self.cache.get(&key).map(|(texture, _)| texture.clone())
     }
 
     /// Sends this frame's requests. When the set of wanted tiles changed (the view

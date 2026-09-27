@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use pdf_engine::{DocInfo, Engine, EngineConfig, Scale, TileKey, TileRequest};
+use pdf_engine::{DocInfo, Engine, EngineConfig, Quality, Scale, TileKey, TileRequest};
 use perf::fixtures;
 
 fn render_tile(engine: &Engine, doc: &DocInfo, page: u32, scale: Scale, tx: u32) {
@@ -17,6 +17,7 @@ fn render_tile(engine: &Engine, doc: &DocInfo, page: u32, scale: Scale, tx: u32)
         },
         generation: 0,
         priority: 0,
+        quality: Quality::Final,
     });
     let result = engine
         .results()

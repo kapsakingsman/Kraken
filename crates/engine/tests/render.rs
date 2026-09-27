@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use pdf_engine::geometry::{page_px_size, tile_grid, tile_rect};
 use pdf_engine::{
-    DocInfo, Engine, EngineConfig, EngineError, Scale, TileKey, TileRequest, locate_pdfium,
+    DocInfo, Engine, EngineConfig, EngineError, Quality, Scale, TileKey, TileRequest, locate_pdfium,
 };
 use pdfium_render::prelude::*;
 
@@ -115,6 +115,7 @@ fn render_stitched(engine: &Engine, doc: &DocInfo, page: u32, scale: Scale) -> (
                 },
                 generation: 0,
                 priority: ty * cols + tx,
+                quality: Quality::Final,
             });
         }
     }
@@ -247,11 +248,13 @@ fn stale_generations_are_not_rendered() {
         key: key(0),
         generation: 4,
         priority: 0,
+        quality: Quality::Final,
     });
     engine.request_tile(TileRequest {
         key: key(1),
         generation: 5,
         priority: 1,
+        quality: Quality::Final,
     });
 
     let result = engine.results().recv_timeout(TIMEOUT).unwrap();
@@ -295,6 +298,7 @@ fn reports_errors_instead_of_panicking() {
             },
             generation: 0,
             priority: 0,
+            quality: Quality::Final,
         });
         let result = engine.results().recv_timeout(TIMEOUT).unwrap();
         assert!(result.tile.is_err());
@@ -311,7 +315,142 @@ fn reports_errors_instead_of_panicking() {
         },
         generation: 0,
         priority: 0,
+        quality: Quality::Final,
     });
     let result = engine.results().recv_timeout(TIMEOUT).unwrap();
     assert!(matches!(result.tile, Err(EngineError::UnknownDocument)));
+}
+
+/// A two-page PDF: page 1 draws a noisy 400x400 image through a form XObject (like the
+/// PowerPoint export that motivated draft rendering), page 2 has only text.
+fn write_image_fixture(path: &Path) {
+    let (w, h) = (400usize, 400usize);
+    let mut pixels = Vec::with_capacity(w * h * 3);
+    let mut seed: u32 = 1;
+    for _ in 0..w * h * 3 {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        pixels.push((seed >> 16) as u8);
+    }
+    let image = [
+        format!(
+            "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB \
+             /BitsPerComponent 8 /Length {} >>\nstream\n",
+            pixels.len()
+        )
+        .into_bytes(),
+        pixels,
+        b"\nendstream".to_vec(),
+    ]
+    .concat();
+    let form = b"q 300 0 0 300 50 400 cm /Im1 Do Q";
+    let text = b"BT /F1 24 Tf 72 700 Td (Only text here) Tj ET";
+    let stream = |body: &[u8]| {
+        [
+            format!("<< /Length {} >>\nstream\n", body.len()).into_bytes(),
+            body.to_vec(),
+            b"\nendstream".to_vec(),
+        ]
+        .concat()
+    };
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /Fm1 5 0 R >> >> /Contents 6 0 R >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 8 0 R >> >> /Contents 9 0 R >>".to_vec(),
+        [
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 595 842] /Resources << /XObject << /Im1 7 0 R >> >> /Length {} >>\nstream\n",
+                form.len()
+            )
+            .into_bytes(),
+            form.to_vec(),
+            b"\nendstream".to_vec(),
+        ]
+        .concat(),
+        stream(b"/Fm1 Do"),
+        image,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        stream(text),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    std::fs::write(path, out).unwrap();
+}
+
+fn render_one(engine: &Engine, doc: &DocInfo, page: u32, quality: Quality) -> pdf_engine::Tile {
+    // 0.5 px/pt: the whole page fits in one tile, and the 300 pt image is downscaled 2.7x.
+    engine.request_tile(TileRequest {
+        key: TileKey {
+            doc: doc.id,
+            page,
+            scale: Scale::from_px_per_pt(0.5),
+            tx: 0,
+            ty: 0,
+        },
+        generation: 0,
+        priority: 0,
+        quality,
+    });
+    engine
+        .results()
+        .recv_timeout(TIMEOUT)
+        .unwrap()
+        .tile
+        .unwrap()
+}
+
+#[test]
+fn pages_with_images_get_a_quick_draft_first() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("images.pdf");
+    write_image_fixture(&path);
+    let engine = engine();
+    let doc = engine.open(&path, None).unwrap();
+
+    let draft = render_one(&engine, &doc, 0, Quality::Sharp);
+    let final_ = render_one(&engine, &doc, 0, Quality::Final);
+    assert!(
+        draft.draft,
+        "an image inside a form XObject makes the page an image page"
+    );
+    assert!(!final_.draft);
+    assert_ne!(
+        draft.rgba, final_.rgba,
+        "image smoothing changes the downscaled image"
+    );
+
+    // Final quality is the normal full-page render.
+    let (w, h) = (final_.width, final_.height);
+    assert_eq!(final_.rgba, render_reference(&path, 0, (w, h)));
+
+    let text = render_one(&engine, &doc, 1, Quality::Sharp);
+    assert!(!text.draft, "text-only pages are rendered final right away");
+
+    let preview = render_one(&engine, &doc, 0, Quality::Preview);
+    assert!(!preview.draft, "previews are never refined");
+    assert_eq!(
+        preview.rgba, draft.rgba,
+        "previews also skip image smoothing"
+    );
 }

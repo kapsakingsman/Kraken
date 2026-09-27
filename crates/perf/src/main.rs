@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use pdf_engine::geometry::{page_px_size, tile_grid};
-use pdf_engine::{Engine, EngineConfig, Scale, TileKey, TileRequest};
+use pdf_engine::{Engine, EngineConfig, Quality, Scale, TileKey, TileRequest};
 use perf::budgets::Budgets;
 use perf::fixtures::{self, Fixtures};
 use perf::report::Report;
@@ -49,6 +49,11 @@ struct Args {
 
     #[arg(long)]
     budgets: Option<PathBuf>,
+
+    /// PDF for the app scenarios. Defaults to the generated 500-page text fixture. Budgets
+    /// are written for that fixture, so with another PDF read the numbers, not PASS/FAIL.
+    #[arg(long)]
+    pdf: Option<PathBuf>,
 
     /// Where reports and fixtures go. Defaults to target/perf-report.
     #[arg(long)]
@@ -136,9 +141,16 @@ fn main() -> Result<()> {
                 app.display()
             );
         }
+        let pdf = args.pdf.clone().unwrap_or_else(|| fixtures.text.clone());
+        if args.pdf.is_some() {
+            ctx.report.notes.push(format!(
+                "App scenarios ran on {} instead of the 500-page fixture; budgets assume the fixture.",
+                pdf.display()
+            ));
+        }
         for scenario in &args.scenarios {
             println!("App scenario '{scenario}'...");
-            if let Err(e) = app_scenario(&app, scenario, &fixtures, &out, &mut ctx) {
+            if let Err(e) = app_scenario(&app, scenario, &pdf, &out, &mut ctx) {
                 ctx.report
                     .errors
                     .push(format!("app scenario {scenario}: {e:#}"));
@@ -198,6 +210,7 @@ fn engine_suite(fixtures: &Fixtures, ctx: &mut Ctx) -> Result<()> {
                         },
                         generation: 0,
                         priority: ty * cols + tx,
+                        quality: Quality::Final,
                     });
                 }
             }
@@ -243,13 +256,13 @@ struct Sample {
 fn run_app(
     app: &Path,
     scenario: &str,
-    fixtures: &Fixtures,
+    pdf: &Path,
     report_path: &Path,
 ) -> Result<(f64, Value, Vec<Sample>)> {
     let _ = std::fs::remove_file(report_path);
     let spawned_unix_ms = unix_ms();
     let child = Command::new(app)
-        .arg(&fixtures.text)
+        .arg(pdf)
         .env("KRAKEN_AUTOMATION", scenario)
         .env("KRAKEN_PERF_REPORT", report_path)
         .spawn()
@@ -272,14 +285,14 @@ const STARTUP_RUNS: usize = 4;
 
 /// Runs the startup scenario several times and reports where the time goes: the steps
 /// between the moments the app marks (process start -> main -> window and GPU -> ...).
-fn startup_scenario(app: &Path, fixtures: &Fixtures, out: &Path, ctx: &mut Ctx) -> Result<()> {
+fn startup_scenario(app: &Path, pdf: &Path, out: &Path, ctx: &mut Ctx) -> Result<()> {
     let mut totals = Vec::new();
     let mut steps: Vec<(String, Vec<f64>)> = Vec::new();
     let mut frames = Vec::new();
     let mut rss = Vec::new();
     for run in 0..STARTUP_RUNS {
         let path = out.join(format!("app-startup-{}.json", run + 1));
-        let (spawned, report, samples) = run_app(app, "startup", fixtures, &path)?;
+        let (spawned, report, samples) = run_app(app, "startup", pdf, &path)?;
         rss.extend(samples.iter().map(|s| s.rss_mb));
         let first_page = report["first_page_unix_ms"].as_f64().unwrap_or(f64::NAN);
         totals.push(first_page - spawned);
@@ -331,19 +344,13 @@ fn startup_scenario(app: &Path, fixtures: &Fixtures, out: &Path, ctx: &mut Ctx) 
     Ok(())
 }
 
-fn app_scenario(
-    app: &Path,
-    scenario: &str,
-    fixtures: &Fixtures,
-    out: &Path,
-    ctx: &mut Ctx,
-) -> Result<()> {
+fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ctx) -> Result<()> {
     std::fs::create_dir_all(out)?;
     if scenario == "startup" {
-        return startup_scenario(app, fixtures, out, ctx);
+        return startup_scenario(app, pdf, out, ctx);
     }
     let report_path = out.join(format!("app-{scenario}.json"));
-    let (_, report, samples) = run_app(app, scenario, fixtures, &report_path)?;
+    let (_, report, samples) = run_app(app, scenario, pdf, &report_path)?;
     let rss: Vec<f64> = samples.iter().map(|s| s.rss_mb).collect();
     let mut soak_peaks = Vec::new();
 

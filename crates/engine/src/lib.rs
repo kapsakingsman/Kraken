@@ -45,6 +45,25 @@ pub struct TileRequest {
     pub generation: u64,
     /// Lower values render first, e.g. distance from the center of the screen.
     pub priority: u32,
+    pub quality: Quality,
+}
+
+/// How carefully to render a tile.
+///
+/// PDFium's high-quality image downscaling ("image smoothing") dominates render time on
+/// pages with very large images: one page with a 151-megapixel image mask took 4.9 s with it
+/// and 0.24 s without. It only changes how images look, so text and vector pages are the
+/// same either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quality {
+    /// Low-resolution previews: image smoothing off.
+    Preview,
+    /// On pages with images, a quick draft with image smoothing off
+    /// ([`Tile::draft`] is set); ask for [`Quality::Final`] afterwards. Other pages are
+    /// rendered final right away.
+    Sharp,
+    /// Full quality.
+    Final,
 }
 
 pub struct Tile {
@@ -53,6 +72,8 @@ pub struct Tile {
     /// Tightly packed RGBA rows, `width * height * 4` bytes, opaque.
     pub rgba: Vec<u8>,
     pub render_time: Duration,
+    /// Rendered without image smoothing; a [`Quality::Final`] render would look better.
+    pub draft: bool,
 }
 
 pub struct TileResult {

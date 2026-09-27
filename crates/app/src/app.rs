@@ -10,7 +10,9 @@ use eframe::egui::{
     Rect, RichText, Sense, Vec2, pos2, vec2,
 };
 use pdf_engine::geometry::{page_px_size, tile_rect};
-use pdf_engine::{DocId, DocInfo, Engine, EngineConfig, PageSize, Scale, TILE_SIZE, TileKey};
+use pdf_engine::{
+    DocId, DocInfo, Engine, EngineConfig, PageSize, Quality, Scale, TILE_SIZE, TileKey,
+};
 use pdf_view::camera::{fit_page_zoom, fit_width_zoom, step_zoom};
 use pdf_view::{AutoScroll, Camera, DocLayout, SmoothScroll, ZoomSettle, visible_tiles};
 
@@ -516,7 +518,9 @@ impl ViewerApp {
                 tx: 0,
                 ty: 0,
             };
-            if let Some(texture) = self.tiles.get(preview, preview_priority + distance)
+            if let Some(texture) =
+                self.tiles
+                    .get(preview, preview_priority + distance, Quality::Preview)
                 && on_screen
             {
                 painter.image(texture.id(), page, FULL_UV, Color32::WHITE);
@@ -704,7 +708,7 @@ fn draw_page_tiles(tiles: &mut TileManager, painter: &Painter, p: PageTiles) -> 
                     let dx = origin.0 + (r.x + r.width / 2) as f32 - view.0 / 2.0;
                     let dy = origin.1 + (r.y + r.height / 2) as f32 - view.1 / 2.0;
                     let tiles_away = ((dx.abs() + dy.abs()) / TILE_SIZE as f32) as u32;
-                    tiles.get(key, base + tiles_away)
+                    tiles.get(key, base + tiles_away, Quality::Sharp)
                 }
                 None => tiles.peek(key),
             };

@@ -78,7 +78,7 @@ impl TileQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Scale;
+    use crate::{Quality, Scale};
 
     fn request(tx: u32, priority: u32, generation: u64) -> TileRequest {
         TileRequest {
@@ -91,6 +91,7 @@ mod tests {
             },
             generation,
             priority,
+            quality: Quality::Sharp,
         }
     }
 

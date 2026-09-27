@@ -155,7 +155,27 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
    | Upload up to 12 MB of tiles per frame instead of 4 tiles | 185 ms |
    | Wait 80 ms instead of 120 ms for the gesture to end | 150 ms |
 
-5. **The idle test itself was wrong at first.** It started while tiles around the view were
+5. **A PowerPoint export with a 151-megapixel image mask** (`issue16263.pdf`, a known
+   PowerPoint 2013 bug: a 2×2 image with a 34,862 × 4,332 soft mask). PDFium decodes and
+   downscales the mask on every render call; it is too big for PDFium's image cache. The
+   time is almost all PDFium's high-quality image downscaling ("image smoothing"), which
+   only changes how images look. Now:
+   - previews are always rendered without image smoothing,
+   - on pages that draw images, sharp tiles come first as a draft without image smoothing
+     and are replaced by the final render as soon as all missing tiles are done,
+   - pages without images render once, as before.
+
+   | This PDF, Linux software GPU | Before | After |
+   |---|---:|---:|
+   | Start to first sharp page | 3.27 s | 1.07 s |
+   | Zoom stop to sharp, median | 964 ms | 507 ms |
+   | Zoom stop to sharp, slowest | 2031 ms | 674 ms |
+
+   Each render of this page still costs at least ~0.4 s for decoding the mask alone.
+
+   Test any PDF with `cargo run --release -p perf -- --suite app --pdf file.pdf` and the
+   engine alone with `pdf-cli bench file.pdf [--draft]`.
+6. **The idle test itself was wrong at first.** It started while tiles around the view were
    still being prefetched, which is real work, and on Windows it counted the frame the test
    draws to end the phase (19 samples of 0% and one of 213% under software rendering). The
    idle window now excludes both; the app itself uses 0% CPU when idle on Linux and Windows.

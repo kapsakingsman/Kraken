@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use pdf_engine::geometry::{page_px_size, tile_grid, tile_rect};
 use pdf_engine::{
-    DocInfo, Engine, EngineConfig, Scale, TILE_SIZE, Tile, TileKey, TileRect, TileRequest,
+    DocInfo, Engine, EngineConfig, Quality, Scale, TILE_SIZE, Tile, TileKey, TileRect, TileRequest,
 };
 
 #[derive(Parser)]
@@ -69,9 +69,21 @@ struct View {
     /// Windows display scaling (Settings > System > Display > Scale), e.g. 1.5 for 150%.
     #[arg(long, default_value_t = 1.0)]
     display_scale: f32,
+
+    /// Render like the app's first pass: pages with images without image smoothing.
+    #[arg(long)]
+    draft: bool,
 }
 
 impl View {
+    fn quality(&self) -> Quality {
+        if self.draft {
+            Quality::Sharp
+        } else {
+            Quality::Final
+        }
+    }
+
     fn scale(&self) -> Result<Scale> {
         if !(1.0..=6400.0).contains(&self.zoom) {
             bail!("--zoom must be between 1 and 6400");
@@ -114,7 +126,7 @@ fn main() -> Result<()> {
             let out = out
                 .clone()
                 .unwrap_or_else(|| default_output(file, *page, view.zoom));
-            render(&engine, &doc, *page - 1, scale, &out)?;
+            render(&engine, &doc, *page - 1, scale, view.quality(), &out)?;
         }
         Command::Bench { file, view, pages } => {
             let scale = view.scale()?;
@@ -144,13 +156,20 @@ fn info(doc: &DocInfo, file: &Path, open_time: Duration) {
     }
 }
 
-fn render(engine: &Engine, doc: &DocInfo, page: u32, scale: Scale, out: &Path) -> Result<()> {
+fn render(
+    engine: &Engine,
+    doc: &DocInfo,
+    page: u32,
+    scale: Scale,
+    quality: Quality,
+    out: &Path,
+) -> Result<()> {
     let (width, height) = page_px_size(doc.page_sizes[page as usize], scale);
     if width as u64 * height as u64 > 250_000_000 {
         bail!("{width} x {height} pixels is too large for a PNG; use a lower --zoom");
     }
     let mut image = vec![0u8; width as usize * height as usize * 4];
-    let stats = render_page(engine, doc, page, scale, |rect, tile| {
+    let stats = render_page(engine, doc, page, scale, quality, |rect, tile| {
         let row_bytes = rect.width as usize * 4;
         for (row, src) in tile.rgba.chunks_exact(row_bytes).enumerate() {
             let start = ((rect.y as usize + row) * width as usize + rect.x as usize) * 4;
@@ -178,6 +197,7 @@ fn bench(
     open_time: Duration,
     limit: Option<u32>,
 ) -> Result<()> {
+    let quality = view.quality();
     let page_count = doc.page_sizes.len() as u32;
     let pages = limit.map_or(page_count, |n| n.min(page_count));
     println!("{}", file.display());
@@ -193,7 +213,7 @@ fn bench(
     let mut all_tiles = Vec::new();
     let mut per_page = Vec::new();
     for page in 0..pages {
-        let stats = render_page(engine, doc, page, scale, |_, _| {})?;
+        let stats = render_page(engine, doc, page, scale, quality, |_, _| {})?;
         if page == 0 {
             println!("  first page ready in {}", ms(open_time + stats.wall));
         }
@@ -240,6 +260,7 @@ fn render_page(
     doc: &DocInfo,
     page: u32,
     scale: Scale,
+    quality: Quality,
     mut on_tile: impl FnMut(TileRect, &Tile),
 ) -> Result<PageStats> {
     let page_px = page_px_size(doc.page_sizes[page as usize], scale);
@@ -257,6 +278,7 @@ fn render_page(
                 },
                 generation: 0,
                 priority: ty * cols + tx,
+                quality,
             });
         }
     }

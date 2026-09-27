@@ -10,7 +10,7 @@ use pdfium_render::prelude::*;
 
 use crate::geometry::{self, PageSize, TILE_SIZE, TileRect};
 use crate::queue::TileQueue;
-use crate::{DocId, DocInfo, EngineError, Tile, TileKey, TileRequest, TileResult};
+use crate::{DocId, DocInfo, EngineError, Quality, Tile, TileKey, TileRequest, TileResult};
 
 pub struct EngineConfig {
     /// Folder containing the PDFium library. `None` uses [`crate::locate_pdfium`].
@@ -179,6 +179,8 @@ struct OpenDoc<'p> {
     pages: Vec<(u32, PdfPage<'p>)>,
     document: PdfDocument<'p>,
     sizes: Vec<PageSize>,
+    /// Whether each page draws images, found out the first time it is rendered.
+    has_images: HashMap<u32, bool>,
 }
 
 impl<'p> Worker<'p> {
@@ -202,7 +204,7 @@ impl<'p> Worker<'p> {
                 }
             }
             if let Some(request) = self.queue.pop(self.generation) {
-                let tile = self.render(&request.key);
+                let tile = self.render(&request.key, request.quality);
                 let result = TileResult {
                     key: request.key,
                     generation: request.generation,
@@ -267,6 +269,7 @@ impl<'p> Worker<'p> {
                 pages: Vec::new(),
                 document,
                 sizes: sizes.clone(),
+                has_images: HashMap::new(),
             },
         );
         Ok(DocInfo {
@@ -275,7 +278,7 @@ impl<'p> Worker<'p> {
         })
     }
 
-    fn render(&mut self, key: &TileKey) -> Result<Tile, EngineError> {
+    fn render(&mut self, key: &TileKey, quality: Quality) -> Result<Tile, EngineError> {
         let started = Instant::now();
         let doc = self
             .docs
@@ -288,7 +291,14 @@ impl<'p> Worker<'p> {
         let page_px = geometry::page_px_size(size, key.scale);
         let rect =
             geometry::tile_rect(page_px, key.tx, key.ty).ok_or(EngineError::TileOutOfRange)?;
+        let known_images = doc.has_images.get(&key.page).copied();
         let page = doc.page(key.page, self.page_cache)?;
+        let has_images = known_images.unwrap_or_else(|| page_has_images(page));
+        let draft = match quality {
+            Quality::Preview => true,
+            Quality::Final => false,
+            Quality::Sharp => has_images,
+        };
 
         let bitmap = match &mut self.bitmap {
             Some(bitmap) => bitmap,
@@ -298,12 +308,15 @@ impl<'p> Worker<'p> {
                 PdfBitmapFormat::BGRA,
             )?),
         };
-        let rgba = render_tile(page, page_px, rect, bitmap)?;
+        let rgba = render_tile(page, page_px, rect, bitmap, !draft)?;
+        doc.has_images.insert(key.page, has_images);
         Ok(Tile {
             width: rect.width,
             height: rect.height,
             rgba,
             render_time: started.elapsed(),
+            // A preview is not refined, so it is not reported as a draft.
+            draft: draft && quality == Quality::Sharp,
         })
     }
 }
@@ -334,8 +347,10 @@ fn render_tile(
     page_px: (u32, u32),
     rect: TileRect,
     bitmap: &mut PdfBitmap,
+    smooth_images: bool,
 ) -> Result<Vec<u8>, EngineError> {
     let config = PdfRenderConfig::new()
+        .set_image_smoothing(smooth_images)
         .set_fixed_size(page_px.0 as Pixels, page_px.1 as Pixels)
         .set_origin(-(rect.x as Pixels), -(rect.y as Pixels))
         .render_form_data(true)
@@ -353,4 +368,26 @@ fn render_tile(
         rgba.extend_from_slice(&row[..row_bytes]);
     }
     Ok(rgba)
+}
+
+/// Whether the page draws any image, including images inside form XObjects.
+fn page_has_images(page: &PdfPage) -> bool {
+    page.objects()
+        .iter()
+        .any(|object| object_has_images(&object, 0))
+}
+
+fn object_has_images(object: &PdfPageObject, depth: u32) -> bool {
+    match object.object_type() {
+        PdfPageObjectType::Image => true,
+        // Forms can nest; the depth limit guards against malicious self-references.
+        PdfPageObjectType::XObjectForm if depth < 16 => {
+            object.as_x_object_form_object().is_some_and(|form| {
+                (0..form.len())
+                    .filter_map(|i| form.get(i).ok())
+                    .any(|child| object_has_images(&child, depth + 1))
+            })
+        }
+        _ => false,
+    }
 }
