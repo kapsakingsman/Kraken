@@ -523,6 +523,26 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
                 ));
                 ctx.add(&key("process_cpu_pct"), mean(&cpu), "% core");
                 ctx.add(&key("frames"), frames.len() as f64, "frames");
+                // Which threads woke up, so a failure points at its cause: the app's own
+                // threads are named (pdfium, render-pool, ...); others belong to the
+                // graphics driver or the system.
+                if let Some(threads) = phase["threads"].as_array() {
+                    let busy: Vec<String> = threads
+                        .iter()
+                        .map(|t| {
+                            format!(
+                                "{} {:.0} ms",
+                                t["name"].as_str().unwrap_or("?"),
+                                t["cpu_ms"].as_f64().unwrap_or(0.0)
+                            )
+                        })
+                        .collect();
+                    ctx.report.notes.push(if busy.is_empty() {
+                        "Idle CPU by thread: no thread used any CPU.".into()
+                    } else {
+                        format!("Idle CPU by thread: {}", busy.join(", "))
+                    });
+                }
             }
             "tour" => {
                 ctx.add(

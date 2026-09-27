@@ -279,3 +279,22 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
     The screen stays pixel-for-pixel identical to PDFium's own render with the small tiles.
 13. **`--pdf` runs failed on budgets made for the fixtures.** With `--pdf` the budgets are
     now shown for comparison ("over (not enforced for --pdf)") and do not fail the run.
+14. **Audit fixes** (after a review of the whole pipeline):
+    - *Previews of slow pages were the most expensive render.* A preview draws every
+      object of the page; on the plan fixture it takes 510 ms, a 512-pixel tile of it
+      0.4 ms. On slow pages the preview now waits for the sharp tiles on screen, and one
+      already rendering is stopped.
+    - *Freeing helpers' caches did not free memory.* PDFium's freed memory stays with the
+      process. Idle helpers now stop after 5 s instead: on the plan fixture the app with
+      its helpers went from 257 MB to 179 MB five seconds after the last zoom.
+    - *Every helper holds its own copy of the parsed page* (100 MB or more on large
+      drawings). The pool reads each helper's memory from the system and keeps the helpers
+      together at about 256 MB.
+    - *Pages were marked slow too easily.* One tile of 25 ms, including parsing the page,
+      was enough; a busy machine could turn ordinary pages slow for good. Tile times now
+      exclude parsing (`Tile::load_time`), it takes one tile of 75 ms or two of 25 ms, and
+      16 quick tiles in a row make a page ordinary again.
+    - The GPU memory allocator is asked to favour low memory use (`MemoryHints::MemoryUsage`);
+      no effect with software rendering, to be measured on a real GPU.
+    - The HUD shows the memory of the app and of its helpers, and the idle test reports the
+      CPU time of each thread, to find what wakes an idle app.

@@ -281,7 +281,6 @@ fn idle_helpers_stop() {
         PoolConfig {
             worker: Some(worker()),
             max_helpers: 2,
-            trim_after: Duration::from_millis(200),
             stop_after: Duration::from_millis(600),
             ..PoolConfig::default()
         },
@@ -349,8 +348,13 @@ fn a_slow_page_is_noticed_while_its_first_tile_renders() {
         result.tile.unwrap();
     }
     assert!(pool.is_slow(doc.id, 0));
+    let status = pool.status();
     assert!(
-        pool.status().tiles_by_helpers > 0,
+        status.slow_in_flight >= 1,
+        "the page should count as slow before its first tile finished"
+    );
+    assert!(
+        status.tiles_by_helpers > 0,
         "helpers should have joined in on the first slow page"
     );
 

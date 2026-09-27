@@ -49,6 +49,7 @@ pub fn run_worker() -> io::Result<()> {
                         height: tile.height,
                         draft: tile.draft,
                         render_time: tile.render_time,
+                        load_time: tile.load_time,
                         rgba: tile.rgba,
                     },
                     Err(e) => FromWorker::Failed {

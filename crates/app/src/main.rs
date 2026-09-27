@@ -7,6 +7,8 @@ mod automation;
 mod hud;
 mod settings;
 mod startup;
+#[cfg(feature = "automation")]
+mod threads;
 mod tiles;
 
 use std::path::PathBuf;
@@ -81,12 +83,22 @@ pub fn gpu_description(cc: &eframe::CreationContext) -> String {
     format!("{} ({kind}, {:?})", info.name, info.backend)
 }
 
+/// Also asks the GPU memory allocator to favour low memory use.
+///
 /// On Windows, use only Direct3D 12. By default wgpu also sets up Vulkan and OpenGL to pick
 /// the best, which on the development PC cost 129 ms of every start and 36 MB of memory
 /// (perf-runner startup: 493 -> 386 ms to the first sharp page). Every Windows 10/11 PC has
 /// Direct3D 12, with a software fallback when there is no GPU. `WGPU_BACKEND` still wins.
 fn gpu_setup() -> eframe::egui_wgpu::WgpuSetup {
     let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    // Smaller GPU memory blocks: the app draws a few hundred textures at most, so the
+    // allocator's large up-front blocks (made for games) only cost memory.
+    let device_descriptor = std::sync::Arc::clone(&setup.device_descriptor);
+    setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+        let mut descriptor = device_descriptor(adapter);
+        descriptor.memory_hints = eframe::wgpu::MemoryHints::MemoryUsage;
+        descriptor
+    });
     if cfg!(windows) && eframe::wgpu::Backends::from_env().is_none() {
         setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
     }

@@ -20,6 +20,8 @@ use crate::settings;
 use crate::startup::{Boot, OpenResult, Opened, START_ZOOM, open_in_background};
 use crate::tiles::{TileManager, preview_px_per_pt};
 
+/// Priority of previews of slow pages: after every sharp tile.
+const PREVIEW_LAST: u32 = 90_000;
 /// Screen points scrolled per mouse-wheel notch.
 const WHEEL_STEP: f32 = 100.0;
 /// Screen points scrolled per arrow key press.
@@ -178,7 +180,7 @@ impl ViewerApp {
 
     /// Tile edge for a page at a render scale. Pages that render slowly get small tiles,
     /// which the render processes can share (see `pdf_engine::RenderPool`). The choice is
-    /// kept per scale so tiles already rendered stay usable, except that a page found slow
+    /// kept per scale so tiles already rendered stay usable; a page whose standing changes
     /// before any of its tiles at that scale arrived switches right away.
     fn tile_size_for(
         grids: &mut HashMap<(DocId, u32, Scale), (u32, u64)>,
@@ -194,7 +196,8 @@ impl ViewerApp {
         let grid = grids
             .entry((doc, page, scale))
             .or_insert((preferred, frame));
-        if grid.0 != preferred && slow && !tiles.has_any(doc, page, scale, grid.0) {
+        // Switch (either way) only while none of the current size have arrived.
+        if grid.0 != preferred && !tiles.has_any(doc, page, scale, grid.0) {
             grid.0 = preferred;
         }
         grid.1 = frame;
@@ -589,9 +592,21 @@ impl ViewerApp {
                 ty: 0,
                 size: pdf_engine::TILE_SIZE,
             };
-            if let Some(texture) =
+            // A preview draws every object of the page, however small: on a slow page (a
+            // detailed drawing) it is the most expensive render of all, so there it waits
+            // until the sharp tiles on screen are done. If it was already rendering, it is
+            // stopped part way.
+            let slow = self
+                .engine
+                .as_ref()
+                .is_ok_and(|engine| engine.is_slow(doc, index as u32));
+            let preview_texture = if slow {
+                self.tiles.peek(preview)
+            } else {
                 self.tiles
                     .get(preview, preview_priority + distance, Quality::Preview)
+            };
+            if let Some(texture) = preview_texture
                 && on_screen
             {
                 painter.image(texture.id(), page, FULL_UV, Color32::WHITE);
@@ -635,7 +650,13 @@ impl ViewerApp {
             // While a zoom gesture is in progress the existing tiles are stretched; asking
             // for more tiles at a scale about to be replaced would only waste rendering.
             let settled = render_scale == display_scale;
-            missing += draw(render_scale, render_tiles, settled.then_some(tile_priority));
+            let page_missing = draw(render_scale, render_tiles, settled.then_some(tile_priority));
+            if slow && page_missing == 0 {
+                // Kept for when this page scrolls back into view or the zoom changes.
+                self.tiles
+                    .get(preview, PREVIEW_LAST + distance, Quality::Preview);
+            }
+            missing += page_missing;
         }
         self.current_page = layout.page_at(top + view_h_pt / 2.0);
         if missing == 0 && self.document.id.is_some() {
@@ -727,6 +748,15 @@ impl eframe::App for ViewerApp {
                 "\nworkers  {} ready, {} busy, {} tiles rendered",
                 workers.helpers, workers.busy_helpers, workers.tiles_by_helpers
             ));
+            // Asked of the system only while the HUD shows it.
+            if self.hud.visible {
+                let app_memory = pdf_engine::system::own_memory_mb()
+                    .map_or_else(|| "?".to_owned(), |mb| mb.to_string());
+                tile_status.push_str(&format!(
+                    "\nmemory   app {app_memory} MB, workers {} MB",
+                    workers.helpers_memory_mb
+                ));
+            }
             if let Some(error) = &workers.helper_error {
                 tile_status.push_str(&format!("\n         not available: {error}"));
             }

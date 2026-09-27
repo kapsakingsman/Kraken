@@ -385,6 +385,7 @@ impl<'p> Worker<'p> {
         }
         let known_images = doc.has_images.get(&key.page).copied();
         let page = doc.page(key.page, *page_cache)?;
+        let load_time = started.elapsed();
         let has_images = known_images.unwrap_or_else(|| page_has_images(page));
         let quality = request.quality;
         let draft = match quality {
@@ -452,7 +453,8 @@ impl<'p> Worker<'p> {
             width: rect.width,
             height: rect.height,
             rgba,
-            render_time: started.elapsed(),
+            render_time: started.elapsed() - load_time,
+            load_time,
             // A preview is not refined, so it is not reported as a draft.
             draft: draft && quality == Quality::Sharp,
         }))

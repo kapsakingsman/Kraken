@@ -10,6 +10,7 @@
 //! and measures CPU and memory of the process from outside while it runs.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
@@ -17,6 +18,9 @@ use pdf_view::Camera;
 use serde_json::json;
 
 use crate::tiles::TileStats;
+
+/// Threads and the CPU milliseconds they used, busiest first.
+type ThreadTimes = Vec<(String, f64)>;
 
 /// Named moments during startup, in order, for the startup breakdown.
 static MARKS: std::sync::Mutex<Vec<(&'static str, f64)>> = std::sync::Mutex::new(Vec::new());
@@ -134,6 +138,8 @@ pub struct Automation {
     /// Most render workers running at once, and their latest counters.
     peak_workers: usize,
     workers: pdf_engine::PoolStatus,
+    /// CPU time per thread during the idle window, filled in by a measuring thread.
+    idle_threads: Arc<Mutex<Option<ThreadTimes>>>,
     /// Wheel notches to send with the next frame's input.
     pending_wheel: Option<i32>,
     /// Notches sent so far in the current [`Action::WheelSpin`], and when the last one was.
@@ -183,6 +189,7 @@ impl Automation {
             gesture_end: None,
             sharpen_ms: Vec::new(),
             pending_wheel: None,
+            idle_threads: Arc::default(),
             peak_workers: 0,
             workers: pdf_engine::PoolStatus::default(),
             spin_sent: 0,
@@ -326,6 +333,15 @@ impl Automation {
             if let Some(entry) = self.phase_log.last_mut() {
                 entry["end_unix_ms"] = json!(unix_ms());
                 entry["seconds"] = json!(elapsed);
+                if matches!(phase.action, Action::Idle)
+                    && let Some(busy) = self.idle_threads.lock().ok().and_then(|mut r| r.take())
+                {
+                    entry["threads"] = json!(
+                        busy.iter()
+                            .map(|(name, ms)| json!({ "name": name, "cpu_ms": ms }))
+                            .collect::<Vec<_>>()
+                    );
+                }
             }
             self.current += 1;
             self.phase_started = None;
@@ -395,6 +411,21 @@ impl Automation {
                 && entry.get("quiet_from_unix_ms").is_none()
             {
                 entry["quiet_from_unix_ms"] = json!(unix_ms());
+                // Which threads use CPU while idle. perf-runner measures from 1 s after
+                // this frame to 0.5 s before the phase ends; the readings are taken just
+                // outside that window (0.75 s and 0.25 s) so reading the thread times,
+                // which costs a little CPU itself, does not count as idle CPU.
+                let window = Duration::from_secs_f32((left - 1.0).max(0.5));
+                let result = Arc::clone(&self.idle_threads);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(750));
+                    let before = crate::threads::cpu_times();
+                    std::thread::sleep(window);
+                    let busy = crate::threads::busy_between(&before, &crate::threads::cpu_times());
+                    if let Ok(mut result) = result.lock() {
+                        *result = Some(busy);
+                    }
+                });
             }
         }
 

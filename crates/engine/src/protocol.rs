@@ -45,6 +45,7 @@ pub enum FromWorker {
         height: u32,
         draft: bool,
         render_time: Duration,
+        load_time: Duration,
         rgba: Vec<u8>,
     },
     Failed {
@@ -162,6 +163,7 @@ pub fn write_from_worker(out: &mut impl Write, message: &FromWorker) -> io::Resu
             height,
             draft,
             render_time,
+            load_time,
             rgba,
         } => {
             b.reserve(rgba.len() + 64);
@@ -172,6 +174,7 @@ pub fn write_from_worker(out: &mut impl Write, message: &FromWorker) -> io::Resu
             put_u32(&mut b, *height);
             b.push(u8::from(*draft));
             put_u64(&mut b, render_time.as_micros() as u64);
+            put_u64(&mut b, load_time.as_micros() as u64);
             put_bytes(&mut b, rgba);
         }
         FromWorker::Failed {
@@ -209,6 +212,7 @@ pub fn read_from_worker(input: &mut impl Read) -> io::Result<Option<FromWorker>>
             height: r.u32()?,
             draft: r.u8()? != 0,
             render_time: Duration::from_micros(r.u64()?),
+            load_time: Duration::from_micros(r.u64()?),
             rgba: r.bytes()?.to_vec(),
         },
         3 => FromWorker::Failed {
@@ -403,6 +407,7 @@ mod tests {
                 height: 1,
                 draft: true,
                 render_time: Duration::from_micros(1234),
+                load_time: Duration::from_micros(56),
                 rgba: vec![1; 12],
             },
             FromWorker::Failed {

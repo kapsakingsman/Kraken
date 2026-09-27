@@ -12,7 +12,7 @@ mod library;
 mod pool;
 pub mod protocol;
 mod queue;
-mod system;
+pub mod system;
 mod worker;
 
 use std::time::Duration;
@@ -81,7 +81,11 @@ pub struct Tile {
     pub height: u32,
     /// Tightly packed RGBA rows, `width * height * 4` bytes, opaque.
     pub rgba: Vec<u8>,
+    /// Time spent drawing the tile, not counting `load_time`.
     pub render_time: Duration,
+    /// Time spent loading (parsing) the page first, if it was not loaded yet; zero when it
+    /// was. Parsing happens once per page and says little about how slow its tiles are.
+    pub load_time: Duration,
     /// Rendered without image smoothing; a [`Quality::Final`] render would look better.
     pub draft: bool,
 }
