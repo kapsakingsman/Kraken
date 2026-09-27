@@ -59,6 +59,7 @@ outside every 250 ms, and reads the frame timing the app writes at the end.
 | `zoom` | 100% → 800% → 50% with pauses | Missed frames, memory |
 | `sharpen` | Six 0.4 s zoom gestures to different zoom levels | Time from the end of the gesture until every visible tile is sharp |
 | `wheel` | Seven Ctrl+wheel notches, sent as real input events | Time from the notch until every visible tile is sharp |
+| `spin` | Four fast Ctrl+wheel spins of 8 notches (one every 60 ms) | Time from the last notch to sharp; tiles rendered and memory for the steps passed through |
 | `idle` | Wait for prefetching to finish, then 6 s of nothing | CPU use and frames drawn (must be ~0) |
 | `tour` | Scroll through all 500 pages | Tile cache stays at its budget; memory |
 | `soak` | The zoom sweep 5 times in one process | Memory must not keep growing (leaks) |
@@ -187,6 +188,19 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
    |---|---:|---:|
    | Notch to sharp, median | 347 ms | 36 ms |
    | Notch to sharp, slowest | 413 ms | 89 ms |
+
+   The cost shows up on fast spins (`spin` scenario): every zoom step passed through is
+   rendered, where before only the final one was.
+
+   | Four fast spins, Linux software GPU | Before | After |
+   |---|---:|---:|
+   | Last notch to sharp, median | 331 ms | 18 ms |
+   | Tiles rendered | 33 | ~160 |
+   | Tile cache, peak | 25 MB | 124 MB |
+   | Process memory, peak | 186 MB | ~300 MB |
+
+   The extra tiles stay within the 300 MB tile cache and are evicted as usual; for single
+   notches (the `wheel` scenario) tiles rendered and memory are the same as before.
 7. **The idle test itself was wrong at first.** It started while tiles around the view were
    still being prefetched, which is real work, and on Windows it counted the frame the test
    draws to end the phase (19 samples of 0% and one of 213% under software rendering). The

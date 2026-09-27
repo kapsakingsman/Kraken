@@ -53,6 +53,12 @@ after_zoom_max_ms = { max = 400, real_gpu_only = true }
 after_notch_p50_ms = { max = 150, real_gpu_only = true }
 after_notch_max_ms = { max = 300, real_gpu_only = true }
 
+[app.spin]
+# Fast Ctrl+wheel spins (8 notches, one every 60 ms). Each zoom step passed through is
+# rendered, so this also watches the memory those extra tiles take.
+after_spin_p50_ms = { max = 150, real_gpu_only = true }
+peak_rss_mb = { max = 500 }
+
 [app.idle]
 # With nothing happening the app must not draw or use CPU (battery life). Measured over 5 s,
 # starting 1 s after the last activity (once prefetching has finished) and ending 0.5 s
