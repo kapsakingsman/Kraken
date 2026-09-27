@@ -87,6 +87,23 @@ Per-frame viewer work (criterion): finding the visible pages of a 10,000-page do
 35 ns and a tile cache frame at full budget 10 µs, against a frame budget of 6,900 µs at
 144 Hz.
 
+### Startup breakdown
+
+The first sharp page takes 0.2 s on the Linux container but 1.7 s on the Windows CI
+runner. Both render with the CPU instead of a GPU; the breakdown shows where the time goes:
+
+| Step | Linux | Windows CI | Why Windows CI is slower |
+|---|---:|---:|---|
+| Process start → `main` | 2 ms | 91 ms | Loading a new, unsigned `.exe` and DLLs (antivirus scan) |
+| `main` → window and GPU ready | 50 ms | 418 ms | Setting up the software GPU (WARP) |
+| Window → PDF opened | 45 ms | 326 ms | Opening takes 7 ms, but the result is picked up on the next frame, and a frame takes ~300 ms on WARP |
+| Opened → first sharp page | 120 ms | 881 ms | 5 frames on both; each frame is ~25 ms on Linux and ~175 ms on WARP |
+
+So most of the difference is frame time under software rendering, not PDF work: opening
+the PDF and rendering its tiles take a few milliseconds on both. On a real GPU a frame
+takes a few milliseconds, so the same 5–6 frames cost about 30–50 ms. The real number
+comes from running `perf-runner --scenarios startup` on a machine with a GPU.
+
 ## Problems these tests found
 
 1. **Finished tiles piled up waiting for upload.** During a zoom, up to 434 rendered tiles
