@@ -62,8 +62,8 @@ outside every 250 ms, and reads the frame timing the app writes at the end.
 | `tour` | Scroll through all 500 pages | Tile cache stays at its budget; memory |
 | `soak` | The zoom sweep 5 times in one process | Memory must not keep growing (leaks) |
 
-Idle CPU is measured from 1 s after the last activity: the frame that ends the previous
-activity is still being drawn when the idle phase starts.
+Idle CPU is measured from 1 s after the last activity until 0.5 s before the test wakes
+the app to end the phase: those two frames are drawn by the test itself, not by idling.
 
 ## Results
 
@@ -77,7 +77,7 @@ those numbers.
 | Text tile, p95 (150% zoom, 150% display) | 1.1 ms | ≤ 15 ms |
 | Vector-heavy page, slowest | 129 ms | ≤ 1500 ms |
 | Start to first sharp page | 203 ms | ≤ 3000 ms |
-| Idle CPU | 0–0.6% of a core | ≤ 1% |
+| Idle CPU | 0% of a core (Linux and Windows CI) | ≤ 1% |
 | Frames drawn while idle | 1 | ≤ 2 |
 | Memory, zoom sweep | 174 MB | ≤ 400 MB |
 | Memory growth, soak rounds 2–5 | none (−5 MB) | ≤ 32 MB |
@@ -98,5 +98,6 @@ Per-frame viewer work (criterion): finding the visible pages of a 10,000-page do
    settled; during the gesture the existing tiles are stretched, as designed. For the zoom
    scenario this cut rendered tiles from 1730 to 69 and peak memory from 918 MB to 174 MB.
 3. **The idle test itself was wrong at first.** It started while tiles around the view were
-   still being prefetched, which is real work. The idle phase now starts after prefetching
-   finishes.
+   still being prefetched, which is real work, and on Windows it counted the frame the test
+   draws to end the phase (19 samples of 0% and one of 213% under software rendering). The
+   idle window now excludes both; the app itself uses 0% CPU when idle on Linux and Windows.

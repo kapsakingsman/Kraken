@@ -40,7 +40,8 @@ ui_cpu_p99_ms = { max = 3.0, real_gpu_only = true }
 
 [app.idle]
 # With nothing happening the app must not draw or use CPU (battery life). Measured over 5 s,
-# starting 1 s after the last activity, once prefetching has finished.
+# starting 1 s after the last activity (once prefetching has finished) and ending 0.5 s
+# before the test wakes the app up again.
 process_cpu_pct = { max = 1.0 }
 frames = { max = 2 }
 

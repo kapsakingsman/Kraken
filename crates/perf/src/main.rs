@@ -73,6 +73,10 @@ const SAMPLE_EVERY: Duration = Duration::from_millis(250);
 /// Idle CPU is measured after this grace period: the frame that ends the previous activity
 /// is still being drawn when the idle phase starts.
 const IDLE_GRACE_MS: f64 = 1000.0;
+/// ...and stops this long before the phase ends: the test wakes the app to end the idle
+/// phase, and that frame is the test's own doing (on Windows CI it showed up as a single
+/// 213% sample after 19 samples of 0%).
+const IDLE_TAIL_MS: f64 = 500.0;
 
 struct Ctx<'a> {
     budgets: &'a Budgets,
@@ -280,14 +284,14 @@ fn app_scenario(
         // A CPU sample averages the time since the previous sample, so only samples whose
         // whole interval lies inside the phase belong to it.
         let interval = SAMPLE_EVERY.as_secs_f64() * 1000.0;
-        let from = if name == "idle" {
-            start + IDLE_GRACE_MS
+        let (from, to) = if name == "idle" {
+            (start + IDLE_GRACE_MS, end - IDLE_TAIL_MS)
         } else {
-            start
+            (start, end)
         };
         let in_phase: Vec<&Sample> = samples
             .iter()
-            .filter(|s| s.unix_ms - interval >= from && s.unix_ms <= end)
+            .filter(|s| s.unix_ms - interval >= from && s.unix_ms <= to)
             .collect();
         if std::env::var_os("PERF_DEBUG").is_some() {
             let cpu: Vec<String> = in_phase
