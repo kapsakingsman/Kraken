@@ -166,6 +166,17 @@ impl TileManager {
     /// right away, and its final version is asked for at a lower priority than any tile
     /// that is still missing.
     pub fn get(&mut self, key: TileKey, priority: u32, quality: Quality) -> Option<TextureHandle> {
+        self.get_tile(key, priority, quality)
+            .map(|(texture, _)| texture)
+    }
+
+    /// Like [`Self::get`], also saying whether the texture is a draft.
+    pub fn get_tile(
+        &mut self,
+        key: TileKey,
+        priority: u32,
+        quality: Quality,
+    ) -> Option<(TextureHandle, bool)> {
         let cached = self.cache.get(&key).cloned();
         let request = match &cached {
             Some((_, true)) => Some((Quality::Final, priority + REFINE_PRIORITY)),
@@ -183,7 +194,7 @@ impl TileManager {
                 quality,
             });
         }
-        cached.map(|(texture, _)| texture)
+        cached
     }
 
     /// Keeps the results for these tiles although the view has not asked for them yet:
@@ -201,7 +212,12 @@ impl TileManager {
 
     /// Returns the tile's texture if it is already cached, without requesting it.
     pub fn peek(&mut self, key: TileKey) -> Option<TextureHandle> {
-        self.cache.get(&key).map(|(texture, _)| texture.clone())
+        self.peek_tile(key).map(|(texture, _)| texture)
+    }
+
+    /// Like [`Self::peek`], also saying whether the texture is a draft.
+    pub fn peek_tile(&mut self, key: TileKey) -> Option<(TextureHandle, bool)> {
+        self.cache.get(&key).cloned()
     }
 
     /// Sends this frame's requests. When the set of wanted tiles changed (the view

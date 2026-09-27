@@ -22,8 +22,11 @@ pub struct FrameSummary {
     pub frames: usize,
     /// Average frames per second.
     pub fps: f32,
-    /// Refresh rate the display is running at, from the median frame interval.
-    pub refresh_hz: f32,
+    /// The rate frames were drawn at, from the median frame interval.
+    pub cadence_hz: f32,
+    /// The monitor's refresh rate, when the platform reports it. Without it the cadence
+    /// stands in, so an app steadily drawing every other refresh would look smooth.
+    pub display_hz: Option<f32>,
     pub interval_p50_ms: f32,
     pub interval_p99_ms: f32,
     pub interval_max_ms: f32,
@@ -41,9 +44,14 @@ pub const CPU_BUDGET_MS: f32 = 3.0;
 pub const MIN_FRAMES: usize = 60;
 
 impl FrameSummary {
-    /// Time available per frame at the measured refresh rate.
+    /// The monitor's refresh rate, or the measured cadence when it is unknown.
+    pub fn refresh_hz(&self) -> f32 {
+        self.display_hz.unwrap_or(self.cadence_hz)
+    }
+
+    /// Time available per frame at the monitor's refresh rate.
     pub fn frame_budget_ms(&self) -> f32 {
-        1000.0 / self.refresh_hz
+        1000.0 / self.refresh_hz()
     }
 
     pub fn missed_percent(&self) -> f32 {
@@ -87,7 +95,8 @@ impl FrameStats {
         self.samples.clear();
     }
 
-    pub fn summary(&self) -> Option<FrameSummary> {
+    /// Summary of the samples; `display_hz` is the monitor's refresh rate if known.
+    pub fn summary(&self, display_hz: Option<f32>) -> Option<FrameSummary> {
         if self.samples.is_empty() {
             return None;
         }
@@ -99,14 +108,19 @@ impl FrameStats {
         let frames = intervals.len();
         let mean_interval = intervals.iter().sum::<f32>() / frames as f32;
         let median = percentile(&intervals, 0.5);
+        let refresh_interval = display_hz.map_or(median, |hz| 1000.0 / hz);
         Some(FrameSummary {
             frames,
             fps: 1000.0 / mean_interval,
-            refresh_hz: 1000.0 / median,
+            cadence_hz: 1000.0 / median,
+            display_hz,
             interval_p50_ms: median,
             interval_p99_ms: percentile(&intervals, 0.99),
             interval_max_ms: intervals[frames - 1],
-            missed_frames: intervals.iter().filter(|&&i| i > median * 1.5).count(),
+            missed_frames: intervals
+                .iter()
+                .filter(|&&i| i > refresh_interval * 1.5)
+                .count(),
             cpu_avg_ms: cpu.iter().sum::<f32>() / frames as f32,
             cpu_p99_ms: percentile(&cpu, 0.99),
         })
@@ -138,8 +152,8 @@ mod tests {
 
     #[test]
     fn steady_144_hz_is_smooth() {
-        let summary = stats(&[FRAME_144; 300], 0.8).summary().unwrap();
-        assert!((summary.refresh_hz - 144.0).abs() < 0.1);
+        let summary = stats(&[FRAME_144; 300], 0.8).summary(None).unwrap();
+        assert!((summary.cadence_hz - 144.0).abs() < 0.1);
         assert!((summary.fps - 144.0).abs() < 0.1);
         assert_eq!(summary.missed_frames, 0);
         assert!((summary.frame_budget_ms() - 6.94).abs() < 0.01);
@@ -150,7 +164,7 @@ mod tests {
     fn a_few_skipped_frames_fail_the_pass_mark() {
         let mut intervals = vec![FRAME_144; 295];
         intervals.extend([FRAME_144 * 2.0; 5]);
-        let summary = stats(&intervals, 0.8).summary().unwrap();
+        let summary = stats(&intervals, 0.8).summary(None).unwrap();
         assert_eq!(summary.missed_frames, 5);
         assert!(summary.interval_p99_ms > 13.0);
         assert!(!summary.is_smooth());
@@ -160,20 +174,31 @@ mod tests {
     fn one_skipped_frame_in_three_hundred_is_allowed() {
         let mut intervals = vec![FRAME_144; 299];
         intervals.push(FRAME_144 * 2.0);
-        let summary = stats(&intervals, 0.8).summary().unwrap();
+        let summary = stats(&intervals, 0.8).summary(None).unwrap();
         assert_eq!(summary.missed_frames, 1);
         assert!(summary.is_smooth());
     }
 
     #[test]
+    fn half_rate_on_a_144_hz_monitor_is_not_smooth() {
+        // Evenly spaced, so the cadence alone would call it smooth.
+        let half = stats(&[FRAME_144 * 2.0; 300], 0.8);
+        assert_eq!(half.summary(None).unwrap().missed_frames, 0);
+        let summary = half.summary(Some(144.0)).unwrap();
+        assert_eq!(summary.missed_frames, 300);
+        assert!((summary.frame_budget_ms() - 6.94).abs() < 0.01);
+        assert!(!summary.is_smooth());
+    }
+
+    #[test]
     fn too_much_ui_cpu_time_fails() {
-        let summary = stats(&[FRAME_144; 300], 4.0).summary().unwrap();
+        let summary = stats(&[FRAME_144; 300], 4.0).summary(None).unwrap();
         assert!(!summary.is_smooth());
     }
 
     #[test]
     fn too_few_frames_cannot_pass() {
-        let summary = stats(&[FRAME_144; 30], 0.5).summary().unwrap();
+        let summary = stats(&[FRAME_144; 30], 0.5).summary(None).unwrap();
         assert!(!summary.is_smooth());
     }
 
@@ -197,7 +222,7 @@ mod tests {
             });
         }
         assert_eq!(stats.len(), 3);
-        assert_eq!(stats.summary().unwrap().interval_max_ms, 4.0);
-        assert!(FrameStats::new(3).summary().is_none());
+        assert_eq!(stats.summary(None).unwrap().interval_max_ms, 4.0);
+        assert!(FrameStats::new(3).summary(None).is_none());
     }
 }

@@ -63,7 +63,12 @@ impl Report {
 
     pub fn markdown(&self) -> String {
         let mut md = String::from("# Performance report\n\n");
-        let verdict = if self.failed() { "FAIL" } else { "PASS" };
+        let verdict = match (self.failed(), self.advisory) {
+            (true, _) => "FAIL",
+            // Nothing failed, but the budgets were not enforced either.
+            (false, true) => "PASS (advisory: budgets shown, not enforced)",
+            (false, false) => "PASS",
+        };
         let _ = writeln!(md, "**Result: {verdict}**\n");
         md.push_str("| Metric | Value | Budget | Status |\n|---|---:|---|---|\n");
         for m in &self.metrics {
@@ -116,5 +121,6 @@ mod tests {
         assert_eq!(advisory.metrics[0].status, Status::Over);
         assert!(!advisory.failed());
         assert!(advisory.markdown().contains("over (not enforced"));
+        assert!(advisory.markdown().contains("Result: PASS (advisory"));
     }
 }

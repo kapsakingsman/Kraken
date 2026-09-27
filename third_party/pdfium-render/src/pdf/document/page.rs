@@ -724,7 +724,8 @@ impl<'a> PdfPage<'a> {
     /// Pdfium calls `cancel` regularly while it renders (between batches of page objects and
     /// while decoding and scaling large images). When it returns `true`, rendering stops and
     /// this function returns `Ok(false)`; the bitmap then holds a partial render. Returns
-    /// `Ok(true)` when the page was rendered completely.
+    /// `Ok(true)` when the page was rendered completely, and
+    /// [PdfiumError::RenderFailed] when Pdfium could not render it.
     ///
     /// `cancel` must not call into Pdfium.
     pub fn render_into_bitmap_cancellable(
@@ -802,7 +803,7 @@ impl<'a> PdfPage<'a> {
             bindings.FPDF_RenderPage_Close(self.page_handle);
             status
         };
-        if pause.cancelled && status != crate::bindgen::FPDF_RENDER_DONE as i32 {
+        if !progressive_render_finished(status, pause.cancelled)? {
             return Ok(false);
         }
 
@@ -1197,5 +1198,42 @@ mod tests {
         }
 
         Ok(())
+    }
+}
+
+/// Kraken patch: what a progressive render ended with. `Ok(true)`: done; `Ok(false)`:
+/// stopped because `cancel` asked; an error for anything else (`FPDF_RENDER_FAILED`, or
+/// "to be continued" without a cancellation, which Pdfium should never report).
+fn progressive_render_finished(status: i32, cancelled: bool) -> Result<bool, PdfiumError> {
+    if status == crate::bindgen::FPDF_RENDER_DONE as i32 {
+        Ok(true)
+    } else if cancelled && status == crate::bindgen::FPDF_RENDER_TOBECONTINUED as i32 {
+        Ok(false)
+    } else {
+        Err(PdfiumError::RenderFailed(status))
+    }
+}
+
+#[cfg(test)]
+mod kraken_progressive_tests {
+    use super::*;
+    use crate::bindgen::{FPDF_RENDER_DONE, FPDF_RENDER_FAILED, FPDF_RENDER_TOBECONTINUED};
+
+    #[test]
+    fn progressive_render_outcomes() {
+        assert!(matches!(progressive_render_finished(FPDF_RENDER_DONE as i32, false), Ok(true)));
+        // Cancelled on the very last object: the render still completed.
+        assert!(matches!(progressive_render_finished(FPDF_RENDER_DONE as i32, true), Ok(true)));
+        assert!(matches!(
+            progressive_render_finished(FPDF_RENDER_TOBECONTINUED as i32, true),
+            Ok(false)
+        ));
+        for cancelled in [false, true] {
+            assert!(matches!(
+                progressive_render_finished(FPDF_RENDER_FAILED as i32, cancelled),
+                Err(PdfiumError::RenderFailed(3))
+            ));
+        }
+        assert!(progressive_render_finished(FPDF_RENDER_TOBECONTINUED as i32, false).is_err());
     }
 }

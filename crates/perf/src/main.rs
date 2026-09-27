@@ -382,6 +382,7 @@ fn startup_scenario(app: &Path, pdf: &Path, out: &Path, ctx: &mut Ctx) -> Result
     let mut steps: Vec<(String, Vec<f64>)> = Vec::new();
     let mut frames = Vec::new();
     let mut rss = Vec::new();
+    let mut coverage = Vec::new();
     for run in 0..STARTUP_RUNS {
         let path = out.join(format!("app-startup-{}.json", run + 1));
         let (spawned, report, samples) = run_app(app, "startup", pdf, &path)?;
@@ -401,6 +402,9 @@ fn startup_scenario(app: &Path, pdf: &Path, out: &Path, ctx: &mut Ctx) -> Result
         for mark in report["startup"]["marks"].as_array().into_iter().flatten() {
             let name = mark["name"].as_str().unwrap_or("?").to_owned();
             let at = mark["unix_ms"].as_f64().unwrap_or(f64::NAN);
+            if name == "first_coverage" {
+                coverage.push(at - spawned);
+            }
             match steps.iter_mut().find(|(n, _)| *n == name) {
                 Some((_, values)) => values.push(at - previous),
                 None => steps.push((name, vec![at - previous])),
@@ -409,8 +413,18 @@ fn startup_scenario(app: &Path, pdf: &Path, out: &Path, ctx: &mut Ctx) -> Result
         }
     }
     let warm = &totals[1..];
-    ctx.add("app.startup.cold_first_page_ms", totals[0], "ms");
+    // The first run of this build: disk and shader caches are not controlled, so it is
+    // not a true cold start.
+    ctx.add("app.startup.first_run_first_page_ms", totals[0], "ms");
     ctx.add("app.startup.first_page_ms", percentile(warm, 0.5), "ms");
+    // Every visible tile there, some still drafts: the first usable view.
+    if !coverage.is_empty() {
+        ctx.add(
+            "app.startup.first_coverage_ms",
+            percentile(&coverage, 0.5),
+            "ms",
+        );
+    }
     for (i, (name, values)) in steps.iter().enumerate() {
         // Named after the moment each step ends; numbered so they sort in order.
         ctx.add(
@@ -426,7 +440,8 @@ fn startup_scenario(app: &Path, pdf: &Path, out: &Path, ctx: &mut Ctx) -> Result
     );
     ctx.add("app.startup.peak_rss_mb", max(&rss), "MB");
     ctx.report.notes.push(format!(
-        "Startup runs to first sharp page (ms), the first one cold: {}. Steps are medians of \
+        "Startup runs to the first page in final quality (ms), the first one right after the \
+         build (caches not controlled): {}. Steps are medians of \
          the warm runs.",
         totals
             .iter()
@@ -493,10 +508,22 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
 
         match name {
             "scroll" | "zoom" => {
-                // With vsync the app draws at the monitor's refresh rate, so frame times are
-                // judged against the display's own frame time, not a fixed number.
-                let normal_frame = percentile(&intervals, 0.5);
+                // Frame times are judged against the monitor's refresh interval, as the app
+                // reports it. Where it cannot (not Windows), the median frame stands in,
+                // which cannot tell a steady half-rate app from a smooth one.
+                let cadence = percentile(&intervals, 0.5);
+                let normal_frame = match report["display_hz"].as_f64() {
+                    Some(hz) if hz > 0.0 => 1000.0 / hz,
+                    _ => {
+                        ctx.report.notes.push(format!(
+                            "{name}: the monitor's refresh rate is unknown here, so the median \
+                             frame interval stands in for it."
+                        ));
+                        cadence
+                    }
+                };
                 ctx.add(&key("display_hz"), 1000.0 / normal_frame.max(1e-9), "Hz");
+                ctx.add(&key("cadence_hz"), 1000.0 / cadence.max(1e-9), "Hz");
                 ctx.add(&key("fps"), 1000.0 / mean(&intervals).max(1e-9), "fps");
                 ctx.add(&key("frame_p99_ms"), percentile(&intervals, 0.99), "ms");
                 ctx.add(
@@ -506,7 +533,7 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
                 );
                 ctx.add(
                     &key("missed_frames_pct"),
-                    missed_frames_pct(&intervals),
+                    missed_frames_pct(&intervals, normal_frame),
                     "%",
                 );
                 ctx.add(&key("ui_cpu_p99_ms"), percentile(&ui_cpu, 0.99), "ms");
@@ -592,6 +619,14 @@ fn app_scenario(app: &Path, scenario: &str, pdf: &Path, out: &Path, ctx: &mut Ct
                 "after_spin",
             ),
         };
+        let expected = report["phases"].as_array().map_or(0, Vec::len);
+        if times.len() != expected {
+            // A missing measurement must not turn into a zero that passes.
+            ctx.report.errors.push(format!(
+                "app scenario {scenario}: {} of {expected} measurements recorded",
+                times.len()
+            ));
+        }
         ctx.report.notes.push(format!(
             "{what}: {}",
             times

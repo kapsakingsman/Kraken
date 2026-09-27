@@ -251,6 +251,10 @@ pub enum PdfiumError {
 
     /// A wrapped internal library error from Pdfium's `FPDF_ERR_*` constant values.
     PdfiumLibraryInternalError(PdfiumInternalError),
+
+    /// Kraken patch: Pdfium's progressive renderer reported this status instead of
+    /// `FPDF_RENDER_DONE` (usually `FPDF_RENDER_FAILED`); the bitmap is incomplete.
+    RenderFailed(i32),
 }
 
 impl Display for PdfiumError {

@@ -23,14 +23,13 @@ pub fn max(values: &[f64]) -> f64 {
     values.iter().copied().fold(0.0, f64::max)
 }
 
-/// Share of frame intervals longer than 1.5 times the median: frames the display showed
-/// twice, which people see as stutter.
-pub fn missed_frames_pct(intervals: &[f64]) -> f64 {
+/// Share of frame intervals longer than 1.5 refresh intervals (`refresh_ms`): frames the
+/// display showed twice, which people see as stutter.
+pub fn missed_frames_pct(intervals: &[f64], refresh_ms: f64) -> f64 {
     if intervals.is_empty() {
         return 0.0;
     }
-    let median = percentile(intervals, 0.5);
-    let missed = intervals.iter().filter(|&&i| i > median * 1.5).count();
+    let missed = intervals.iter().filter(|&&i| i > refresh_ms * 1.5).count();
     missed as f64 * 100.0 / intervals.len() as f64
 }
 
@@ -51,7 +50,9 @@ mod tests {
     fn missed_frames() {
         let mut v = vec![6.94; 98];
         v.extend([13.9, 13.9]);
-        assert!((missed_frames_pct(&v) - 2.0).abs() < 1e-9);
-        assert_eq!(missed_frames_pct(&[]), 0.0);
+        assert!((missed_frames_pct(&v, 6.94) - 2.0).abs() < 1e-9);
+        assert_eq!(missed_frames_pct(&[], 6.94), 0.0);
+        // Drawing every other refresh of a 144 Hz monitor misses every frame.
+        assert_eq!(missed_frames_pct(&[13.9; 10], 6.94), 100.0);
     }
 }

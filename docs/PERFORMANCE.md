@@ -298,3 +298,30 @@ comes from running `perf-runner --scenarios startup` on a machine with a GPU.
       no effect with software rendering, to be measured on a real GPU.
     - The HUD shows the memory of the app and of its helpers, and the idle test reports the
       CPU time of each thread, to find what wakes an idle app.
+15. **The tests could report numbers that did not mean what they said** (found by an
+    outside review):
+    - *"Sharp" included drafts.* A draft tile (rendered without image smoothing, replaced
+      by the final one moments later) counted as done, and once a view was complete it
+      stayed complete even after scrolling to tiles that were not there yet. Completion is
+      now worked out every frame from what is on screen, and only final tiles count. The
+      startup report shows both moments: `first_coverage_ms` (every visible tile there,
+      drafts included) and `first_page_ms` (every visible tile final).
+    - *Wheel and spin timings read the previous frame.* A notch changes the zoom at once,
+      and the test looked at the completion flag before the frame for the new zoom was
+      drawn, so it could see the old view's "complete". The test now looks after the frame
+      is drawn. Figures measured with the old test (wheel ~13 ms per notch on the
+      development PC, 36 ms in the table under 6) were too low; with the fix the same
+      Linux run gives 46 ms median, 68 ms slowest.
+    - *A phase that never finished passed.* Sharpen, wheel, spin and settle phases now fail
+      when the view is not complete in time, and a missing measurement is an error
+      instead of a zero.
+    - *Missed frames were judged against the app's own frame rate.* An app steadily drawing
+      72 fps on a 144 Hz monitor looked perfect. On Windows the app now reads the monitor's
+      refresh rate and judges frames against it (HUD and `display_hz`); the measured rate
+      is reported separately as `cadence_hz`.
+    - *`--pdf` runs said PASS* although budgets were not enforced; they now say
+      "PASS (advisory …)". The first startup run is called "first run" rather than
+      "cold": disk and shader caches are not controlled.
+    - *A failed render could count as a finished tile.* The progressive render now reports
+      PDFium's `FPDF_RENDER_FAILED` as an error instead of returning the incomplete image.
+    - The HUD is hidden until F3 is pressed.

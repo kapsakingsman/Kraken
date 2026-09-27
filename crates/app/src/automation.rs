@@ -87,7 +87,7 @@ fn scenario(name: &str) -> Option<Vec<Phase>> {
         ],
         "tour" => vec![
             phase("tour", 120.0, Action::Tour(40_000.0)),
-            phase("settle", 3.0, Action::Settle),
+            phase("settle", 20.0, Action::Settle),
         ],
         // The zoom sweep five times in one process: memory must not keep growing.
         "soak" => ["soak-1", "soak-2", "soak-3", "soak-4", "soak-5"]
@@ -127,6 +127,8 @@ pub struct Automation {
     phases: Vec<Phase>,
     started: Instant,
     opened_ms: Option<f64>,
+    /// When every tile of the first view had arrived, drafts included.
+    first_coverage_ms: Option<f64>,
     first_page_ms: Option<f64>,
     first_page_unix_ms: Option<f64>,
     /// Frames drawn from opening the document to the first sharp page.
@@ -140,6 +142,8 @@ pub struct Automation {
     workers: pdf_engine::PoolStatus,
     /// CPU time per thread during the idle window, filled in by a measuring thread.
     idle_threads: Arc<Mutex<Option<ThreadTimes>>>,
+    /// The monitor's refresh rate, if the platform reports it.
+    display_hz: Option<f32>,
     /// When the GPU finished the work of the frame that started the idle phase (Unix ms),
     /// filled in by the same thread.
     gpu_quiet_unix_ms: Arc<Mutex<Option<f64>>>,
@@ -161,6 +165,9 @@ pub struct Automation {
 /// What the app tells the automation each frame.
 pub struct FrameState {
     pub document_open: bool,
+    /// Every tile on screen has arrived, some perhaps as drafts.
+    pub covered: bool,
+    /// Every tile on screen is in its final quality at the zoom being rendered.
     pub render_complete: bool,
     pub tiles_pending: bool,
     /// Tiles are requested for the zoom on screen (not waiting for a gesture to settle).
@@ -185,6 +192,7 @@ impl Automation {
             phases,
             started: Instant::now(),
             opened_ms: None,
+            first_coverage_ms: None,
             first_page_ms: None,
             first_page_unix_ms: None,
             frames_to_first_page: 0,
@@ -194,6 +202,7 @@ impl Automation {
             pending_wheel: None,
             idle_threads: Arc::default(),
             gpu_quiet_unix_ms: Arc::default(),
+            display_hz: None,
             peak_workers: 0,
             workers: pdf_engine::PoolStatus::default(),
             spin_sent: 0,
@@ -227,6 +236,10 @@ impl Automation {
             if state.document_open {
                 self.frames_to_first_page += 1;
             }
+            if state.document_open && state.covered && self.first_coverage_ms.is_none() {
+                self.first_coverage_ms = Some(now_ms);
+                mark("first_coverage");
+            }
             if state.document_open && state.render_complete {
                 self.first_page_ms = Some(now_ms);
                 self.first_page_unix_ms = Some(unix_ms());
@@ -250,7 +263,14 @@ impl Automation {
         let s = camera.screen_per_pt();
         let (_, max_y) = camera.max_scroll(state.content, state.view);
         let center = (state.view.0 / 2.0, state.view.1 / 2.0);
-        let mut done = elapsed >= phase.seconds;
+        let timed_out = elapsed >= phase.seconds;
+        // Phases that wait for the view to be complete fail when it never is, instead of
+        // moving on with a missing measurement.
+        let waits_for_view = matches!(
+            phase.action,
+            Action::Settle | Action::ZoomTo(_) | Action::WheelNotches(_) | Action::WheelSpin { .. }
+        );
+        let mut done = timed_out && !waits_for_view;
 
         match phase.action {
             Action::Scroll(speed) => {
@@ -329,6 +349,13 @@ impl Automation {
             }
         }
 
+        if timed_out && !done {
+            self.failure = Some(format!(
+                "phase '{}' did not end with a complete, sharp view within {} s",
+                phase.name, phase.seconds
+            ));
+            return true;
+        }
         if done {
             self.gesture_start_zoom = None;
             self.gesture_end = None;
@@ -393,7 +420,11 @@ impl Automation {
         tiles: &TileStats,
         workers: &pdf_engine::PoolStatus,
         gpu: Option<&eframe::wgpu::Device>,
+        display_hz: Option<f32>,
     ) {
+        if display_hz.is_some() {
+            self.display_hz = display_hz;
+        }
         self.peak_workers = self.peak_workers.max(workers.helpers);
         self.workers = workers.clone();
         let now = Instant::now();
@@ -488,6 +519,8 @@ impl Automation {
             "ok": self.failure.is_none(),
             "failure": self.failure,
             "open_ms": self.opened_ms,
+            "display_hz": self.display_hz,
+            "first_coverage_ms": self.first_coverage_ms,
             "first_page_ms": self.first_page_ms,
             "first_page_unix_ms": self.first_page_unix_ms,
             "startup": {

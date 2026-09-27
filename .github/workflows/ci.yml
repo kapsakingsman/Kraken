@@ -46,6 +46,10 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Test the Kraken patches to the PDFium wrapper
+        if: runner.os == 'Linux'
+        run: cargo test --manifest-path third_party/pdfium-render/Cargo.toml --target-dir target/pdfium-render --lib kraken_
+
       - name: Render smoke test
         shell: bash
         run: |

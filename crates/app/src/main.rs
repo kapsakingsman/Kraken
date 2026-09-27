@@ -4,6 +4,7 @@
 mod app;
 #[cfg(feature = "automation")]
 mod automation;
+mod display;
 mod hud;
 mod settings;
 mod startup;

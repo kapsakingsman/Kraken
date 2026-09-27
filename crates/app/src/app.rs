@@ -71,6 +71,11 @@ pub struct ViewerApp {
     /// stretched, until the tiles for a new zoom arrive.
     fallback_scale: Option<Scale>,
     render_scale: Option<Scale>,
+    /// Every tile on screen at the render scale has arrived (drafts included), as of the
+    /// last frame drawn.
+    covered: bool,
+    /// Every tile on screen at the render scale is in its final quality, as of the last
+    /// frame drawn.
     render_complete: bool,
     current_page: usize,
     hud: Hud,
@@ -80,6 +85,8 @@ pub struct ViewerApp {
     message: Option<String>,
     /// The display scale remembered for the next start (see `settings`).
     saved_display_scale: Option<f32>,
+    /// When the monitor's refresh rate was last read (the window may move to another one).
+    display_checked: Option<std::time::Instant>,
     #[cfg(feature = "automation")]
     automation: Option<crate::automation::Automation>,
 }
@@ -111,6 +118,7 @@ impl ViewerApp {
             zoom_command: None,
             fallback_scale: None,
             render_scale: None,
+            covered: false,
             render_complete: false,
             current_page: 0,
             hud: Hud::new(gpu.clone()),
@@ -118,6 +126,7 @@ impl ViewerApp {
             auto_scroll: None,
             opening: boot.opening,
             saved_display_scale,
+            display_checked: None,
             #[cfg(feature = "automation")]
             automation: crate::automation::Automation::from_env(gpu),
         }
@@ -485,27 +494,6 @@ impl ViewerApp {
             )
         });
 
-        #[cfg(feature = "automation")]
-        let zoom_settled = self.settle.render_zoom() == self.camera.zoom();
-        #[cfg(feature = "automation")]
-        let automating = match &mut self.automation {
-            Some(automation) => automation.drive(
-                &mut self.camera,
-                &crate::automation::FrameState {
-                    document_open: self.document.id.is_some(),
-                    render_complete: self.render_complete,
-                    tiles_pending: self.tiles.has_pending_work(),
-                    zoom_settled,
-                    content,
-                    view,
-                    dt,
-                },
-            ),
-            None => false,
-        };
-        #[cfg(not(feature = "automation"))]
-        let automating = false;
-
         if let Some(test) = &mut self.auto_scroll
             && !test.step(dt, &mut self.camera.y, max_y)
         {
@@ -523,10 +511,11 @@ impl ViewerApp {
         if self.render_scale != Some(render_scale) {
             // Keep the previous tiles as a stand-in, unless they never finished loading
             // (then the older, complete set is the better stand-in).
-            if self.render_complete || self.fallback_scale.is_none() {
+            if self.covered || self.fallback_scale.is_none() {
                 self.fallback_scale = self.render_scale;
             }
             self.render_scale = Some(render_scale);
+            self.covered = false;
             self.render_complete = false;
         }
         let display_scale = Scale::from_zoom(self.camera.zoom(), ppp);
@@ -538,7 +527,7 @@ impl ViewerApp {
         let top = self.camera.y.position();
         let doc_left = rect.left() + self.camera.doc_left_pt(content.0, view.0) * s;
         let view_px = (view.0 * ppp, view.1 * ppp);
-        let mut missing = 0;
+        let mut coverage = Coverage::default();
 
         // Pages one screen above and below are prepared too, so scrolling finds them ready.
         let layout = &self.document.layout;
@@ -650,17 +639,21 @@ impl ViewerApp {
             // While a zoom gesture is in progress the existing tiles are stretched; asking
             // for more tiles at a scale about to be replaced would only waste rendering.
             let settled = render_scale == display_scale;
-            let page_missing = draw(render_scale, render_tiles, settled.then_some(tile_priority));
-            if slow && page_missing == 0 {
+            let page = draw(render_scale, render_tiles, settled.then_some(tile_priority));
+            if slow && page.missing == 0 {
                 // Kept for when this page scrolls back into view or the zoom changes.
                 self.tiles
                     .get(preview, PREVIEW_LAST + distance, Quality::Preview);
             }
-            missing += page_missing;
+            coverage.missing += page.missing;
+            coverage.drafts += page.drafts;
         }
         self.current_page = layout.page_at(top + view_h_pt / 2.0);
-        if missing == 0 && self.document.id.is_some() {
-            self.render_complete = true;
+        // Worked out from what is on screen every frame: scrolling to uncached content or
+        // opening another document makes the view incomplete again.
+        self.covered = coverage.missing == 0 && self.document.id.is_some();
+        self.render_complete = self.covered && coverage.drafts == 0;
+        if self.covered {
             self.fallback_scale = None;
             // The first page is on screen: now the render workers can start without
             // slowing down startup.
@@ -671,6 +664,30 @@ impl ViewerApp {
                 self.prewarmed = true;
             }
         }
+
+        // The automation looks at the frame just drawn (after this frame's input changed
+        // the view), and its camera moves show up in the next frame.
+        #[cfg(feature = "automation")]
+        let zoom_settled = self.settle.render_zoom() == self.camera.zoom();
+        #[cfg(feature = "automation")]
+        let automating = match &mut self.automation {
+            Some(automation) => automation.drive(
+                &mut self.camera,
+                &crate::automation::FrameState {
+                    document_open: self.document.id.is_some(),
+                    covered: self.covered,
+                    render_complete: self.render_complete,
+                    tiles_pending: self.tiles.has_pending_work(),
+                    zoom_settled,
+                    content,
+                    view,
+                    dt,
+                },
+            ),
+            None => false,
+        };
+        #[cfg(not(feature = "automation"))]
+        let automating = false;
 
         paint_scrollbar(&painter, v_bar, v_thumb);
         if let Some(thumb) = h_thumb {
@@ -691,6 +708,13 @@ impl eframe::App for ViewerApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.hud.begin_frame(frame.info().cpu_usage);
+        if self
+            .display_checked
+            .is_none_or(|at| at.elapsed() > std::time::Duration::from_secs(2))
+        {
+            self.hud.display_hz = crate::display::refresh_hz(frame);
+            self.display_checked = Some(std::time::Instant::now());
+        }
         let ctx = ui.ctx().clone();
         let ppp = ctx.pixels_per_point();
         if self.saved_display_scale != Some(ppp) {
@@ -788,6 +812,7 @@ impl eframe::App for ViewerApp {
                 self.tiles.stats(),
                 &workers,
                 gpu,
+                self.hud.display_hz,
             );
         }
 
@@ -818,8 +843,8 @@ struct PageTiles {
 
 /// Draws the cached tiles of a page at `scale`, stretched to the page's current size on
 /// screen (1:1 when the zoom has settled), and requests missing ones. Returns how many
-/// tiles on screen are still missing.
-fn draw_page_tiles(tiles: &mut TileManager, painter: &Painter, p: PageTiles) -> usize {
+/// tiles on screen are still missing or only drafts.
+fn draw_page_tiles(tiles: &mut TileManager, painter: &Painter, p: PageTiles) -> Coverage {
     let page_px = page_px_size(p.size, p.scale);
     // Tile pixels per screen pixel: 1.0 once the zoom has settled.
     let k = page_px.0 as f32 / (p.page_rect.width() * p.ppp);
@@ -840,7 +865,7 @@ fn draw_page_tiles(tiles: &mut TileManager, painter: &Painter, p: PageTiles) -> 
         visible_tiles(page_px, origin, view, p.tile_size)
     };
     let to_screen = 1.0 / (k * p.ppp);
-    let mut missing = 0;
+    let mut coverage = Coverage::default();
     for ty in rows {
         for tx in cols.clone() {
             let Some(r) = tile_rect(page_px, p.tile_size, tx, ty) else {
@@ -864,21 +889,31 @@ fn draw_page_tiles(tiles: &mut TileManager, painter: &Painter, p: PageTiles) -> 
                     let dy = origin.1 + (r.y + r.height / 2) as f32 - view.1 / 2.0;
                     // In full-size tiles, so priorities compare across tile sizes.
                     let tiles_away = ((dx.abs() + dy.abs()) / TILE_SIZE as f32) as u32;
-                    tiles.get(key, base + tiles_away, Quality::Sharp)
+                    tiles.get_tile(key, base + tiles_away, Quality::Sharp)
                 }
-                None => tiles.peek(key),
+                None => tiles.peek_tile(key),
             };
             let visible = screen.intersects(p.viewport);
             match texture {
-                Some(texture) if visible => {
+                Some((texture, draft)) if visible => {
                     painter.image(texture.id(), screen, FULL_UV, Color32::WHITE);
+                    coverage.drafts += usize::from(draft);
                 }
-                None if visible => missing += 1,
+                None if visible => coverage.missing += 1,
                 _ => {}
             }
         }
     }
-    missing
+    coverage
+}
+
+/// Tiles on screen at one scale that are not final yet.
+#[derive(Clone, Copy, Default)]
+struct Coverage {
+    /// Not rendered at all.
+    missing: usize,
+    /// Shown as a draft (no image smoothing) while the final version renders.
+    drafts: usize,
 }
 
 /// Handles dragging the thumb and clicking the track of a scrollbar. Returns the thumb's

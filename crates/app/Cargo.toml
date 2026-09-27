@@ -16,13 +16,15 @@ rfd = "0.17.2"
 serde_json = { version = "1.0.151", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-# Per-thread CPU times for the idle test (src/threads.rs).
-windows-sys = { version = "0.61.2", optional = true, features = [
+# The monitor's refresh rate (src/display.rs) and per-thread CPU times for the idle test
+# (src/threads.rs).
+windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
 ] }
 
 [features]
 # Scripted scenarios for performance tests and CI (see src/automation.rs). Not for users.
-automation = ["dep:serde_json", "dep:windows-sys"]
+automation = ["dep:serde_json"]

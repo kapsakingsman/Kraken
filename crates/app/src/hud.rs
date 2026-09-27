@@ -13,6 +13,8 @@ const TEST_FRAMES: usize = 20_000;
 
 pub struct Hud {
     pub visible: bool,
+    /// The monitor's refresh rate, if known; frame times are judged against it.
+    pub display_hz: Option<f32>,
     /// The GPU drawing the window, see `gpu_description`.
     gpu: String,
     live: FrameStats,
@@ -30,7 +32,9 @@ pub enum HudAction {
 impl Hud {
     pub fn new(gpu: String) -> Self {
         Hud {
-            visible: true,
+            // Diagnostics are for developers: F3 shows them.
+            visible: false,
+            display_hz: None,
             gpu,
             live: FrameStats::new(LIVE_FRAMES),
             test: None,
@@ -67,7 +71,7 @@ impl Hud {
     }
 
     pub fn finish_test(&mut self) {
-        self.last_test = self.test.take().and_then(|t| t.summary());
+        self.last_test = self.test.take().and_then(|t| t.summary(self.display_hz));
     }
 
     pub fn show(&self, ctx: &egui::Context, test_running: bool, tiles: &str) -> HudAction {
@@ -85,7 +89,7 @@ impl Hud {
                         ui.set_width(340.0);
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         ui.label(RichText::new("Frame timing  (F3 hides)").strong());
-                        match self.live.summary() {
+                        match self.live.summary(self.display_hz) {
                             Some(s) if s.frames >= 10 => summary_lines(ui, &s),
                             _ => {
                                 ui.label("Scroll to measure. Only frames drawn while");
@@ -113,7 +117,8 @@ fn summary_lines(ui: &mut egui::Ui, s: &FrameSummary) {
     let mono = |text: String| RichText::new(text).monospace();
     ui.label(mono(format!(
         "display  {:>5.0} Hz   fps {:>6.1}",
-        s.refresh_hz, s.fps
+        s.refresh_hz(),
+        s.fps
     )));
     ui.label(mono(format!(
         "frame    p50 {:.2}  p99 {:.2}  max {:.1} ms",
@@ -157,7 +162,7 @@ fn test_result(ui: &mut egui::Ui, s: &FrameSummary) {
         egui::Label::new(format!(
             "Pass mark: under 1% missed frames and UI CPU p99 under {CPU_BUDGET_MS} ms \
              (frame budget at {:.0} Hz is {:.1} ms).",
-            s.refresh_hz,
+            s.refresh_hz(),
             s.frame_budget_ms()
         ))
         .wrap(),
